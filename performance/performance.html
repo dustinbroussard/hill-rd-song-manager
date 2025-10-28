@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hill Rd. Song Manager – Performance Mode</title>
+  <link rel="stylesheet" href="../style.css">
+  <link rel="stylesheet" href="performance.css">
+  <link rel="stylesheet" href="../themes.css">
+  <link rel="icon" href="../assets/icons/icon-192x192.png">
+  <link href="../lib/fontawesome/css/all.min.css" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Neonderthaw&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="performance-mode" class="performance-mode-overlay" style="display: flex;">
+    <div class="performance-header">
+      <div id="performance-song-info" class="song-info"></div>
+      <div class="performance-controls">
+        <button id="prev-song-btn" class="nav-arrow left" aria-label="Previous song"><i class="fas fa-chevron-left"></i></button>
+        <button id="next-song-btn" class="nav-arrow right" aria-label="Next song"><i class="fas fa-chevron-right"></i></button>
+        <div id="font-controls">
+          <button id="decrease-font-btn" title="Smaller Font">−</button>
+          <span id="font-size-display">32px</span>
+          <button id="increase-font-btn" title="Larger Font">+</button>
+        </div>
+        <button id="toggle-chords-btn" class="icon-btn" title="Toggle Chords"><i class="fas fa-music"></i></button>
+        <button id="autoscroll-settings-btn" class="icon-btn" title="Autoscroll Settings"><i class="fas fa-cog"></i></button>
+        <button id="theme-toggle-btn" class="icon-btn theme-toggle-btn" title="Toggle Theme"><i class="fas fa-adjust"></i></button>
+        <button id="settings-btn" class="icon-btn" title="Settings" aria-haspopup="true" aria-expanded="false"><i class="fas fa-gear"></i></button>
+        <div id="settings-menu" class="settings-menu" role="menu" aria-labelledby="settings-btn" hidden>
+          <div class="settings-section">
+            <div class="settings-label"><i class="fas fa-palette" aria-hidden="true"></i><span>Theme</span></div>
+            <select id="theme-select" class="theme-select" title="Theme" aria-label="Choose theme">
+              <option value="system">System (Auto)</option>
+              <option value="default-dark">Default Dark</option>
+              <option value="default-light">Default Light</option>
+              <option value="mardi-gold-dark">Black & Gold Dark</option>
+              <option value="mardi-gold-light">Black & Gold Light</option>
+              <option value="blue-dark">Blue Dark</option>
+              <option value="blue-light">Blue Light</option>
+              <option value="red-dark">Red Dark</option>
+              <option value="red-light">Red Light</option>
+              <option value="green-dark">Green Dark</option>
+              <option value="green-light">Green Light</option>
+              <option value="purple-dark">Purple Dark</option>
+              <option value="purple-light">Purple Light</option>
+            </select>
+          </div>
+          <div class="settings-section">
+            <div class="settings-label"><i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i><span>Hook Mill</span></div>
+            <div class="settings-actions">
+              <button id="hookmill-sync-proxy" class="btn" type="button" title="Sync in Library"><i class="fas fa-arrows-rotate"></i>&nbsp;Sync (Library)</button>
+              <a class="btn" href="../hook-mill/index.html" target="_blank" rel="noopener"><i class="fas fa-arrow-up-right-from-square"></i>&nbsp;Open</a>
+            </div>
+          </div>
+        </div>
+        <button id="exit-performance-btn" class="icon-btn danger" title="Exit Performance"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <div id="lyrics-display" class="lyrics-container"></div>
+  </div>
+
+  <div id="autoscroll-delay-modal" class="modal">
+    <div class="modal-content">
+      <h2>Set Autoscroll</h2>
+      <label id="autoscroll-delay-label" for="autoscroll-delay-slider">Delay (seconds):</label>
+      <input type="range" id="autoscroll-delay-slider" min="0" max="10" step="1">
+      <span id="autoscroll-delay-value">3s</span>
+      <label for="autoscroll-speed-slider">Speed (px/50ms):</label>
+      <input type="range" id="autoscroll-speed-slider" min="0.5" max="5" step="0.1">
+      <span id="autoscroll-speed-value">1</span>
+      <button id="close-autoscroll-delay-modal" class="btn">Save</button>
+    </div>
+  </div>
+
+  <button id="scroll-to-top-btn" class="scroll-to-top-btn" aria-label="Scroll to top"><i class="fas fa-arrow-up"></i></button>
+  <button id="auto-scroll-btn" class="auto-scroll-btn" aria-label="Toggle autoscroll"><i class="fas fa-angle-double-down"></i></button>
+
+  <script src="../lib/mammoth.browser.min.js"></script>
+  <script src="performance.js"></script>
+  <script>
+    // Ensure theme is applied on load
+    try {
+      const stored = localStorage.getItem('theme') || 'default-dark';
+      const effective = stored === 'system'
+        ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'default-dark' : 'default-light')
+        : stored === 'dark' ? 'default-dark' : stored === 'light' ? 'default-light' : stored;
+      document.documentElement.dataset.theme = effective;
+    } catch {}
+    // Attach settings menu logic and theme control
+    (function(){
+      function getSystemPreferredTheme(){ try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'default-dark' : 'default-light'; } catch { return 'default-dark'; } }
+      function resolveEffectiveTheme(name){ if (!name) return 'default-dark'; if (name==='system') return getSystemPreferredTheme(); if (name==='dark') return 'default-dark'; if (name==='light') return 'default-light'; return name; }
+      function applyTheme(name){ const actual=resolveEffectiveTheme(name); document.documentElement.dataset.theme=actual; localStorage.setItem('theme', name); try{ const sel=document.getElementById('theme-select'); if(sel) sel.value=name; }catch{} }
+      document.addEventListener('DOMContentLoaded', function(){
+        const btn=document.getElementById('settings-btn'); const overlay=document.getElementById('settings-menu'); if(btn&&overlay){
+          const close=()=>{ if(overlay.hidden) return; btn.setAttribute('aria-expanded','false'); overlay.hidden=true; try{document.body.classList.remove('no-scroll');}catch{} };
+          const open=()=>{ btn.setAttribute('aria-expanded','true'); overlay.hidden=false; try{document.body.classList.add('no-scroll');}catch{} };
+          btn.addEventListener('click', (e)=>{e.stopPropagation(); overlay.hidden?open():close();});
+          overlay.addEventListener('click', (e)=>{ if(e.target===overlay || e.target.closest('.modal-close-x')) close(); });
+          document.addEventListener('keydown', (e)=>{ if(e.key==='Escape') close(); });
+        }
+        const themeToggle=document.getElementById('theme-toggle-btn'); if(themeToggle){ themeToggle.addEventListener('click', ()=>{ const stored=localStorage.getItem('theme')||'default-dark'; if(stored==='system'){ const cur=resolveEffectiveTheme('system'); applyTheme(/dark/i.test(cur)?'default-light':'default-dark'); return;} const cur=resolveEffectiveTheme(stored); const next=/dark/i.test(cur)?cur.replace(/dark/i,'light'):cur.replace(/light/i,'dark'); applyTheme(next || (cur.includes('dark')?'default-light':'default-dark')); }); }
+        const themeSelect=document.getElementById('theme-select'); if(themeSelect){ const saved=localStorage.getItem('theme')||'default-dark'; themeSelect.value=saved; themeSelect.addEventListener('change', (e)=>applyTheme(e.target.value)); }
+        const syncProxy=document.getElementById('hookmill-sync-proxy'); if(syncProxy){ syncProxy.addEventListener('click', ()=>{ alert('Hook Mill sync runs from the Library screen. Returning there will allow syncing.'); window.location.href = '../index.html'; }); }
+      });
+    })();
+  </script>
+</body>
+</html>

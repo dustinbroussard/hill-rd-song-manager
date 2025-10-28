@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <base href="/hook-mill/">
+  <title>Hook Mill</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0c0d10">
+  <meta name="color-scheme" content="dark light">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <meta name="description" content="Hook Mill - generate catchy song hooks quickly">
+</head>
+<body>
+    <header class="app-header" aria-label="Application header">
+    <div class="branding">
+      <img src="icons/logo.png" alt="Hook Mill logo" class="logo" decoding="async">
+      <span id="model-badge" class="badge model" title="Current model">model</span>
+      <span id="conn-dot" class="conn-dot" role="status" aria-live="polite" title="Connection status"></span>
+    </div>
+    <div class="header-actions">
+      
+        <a href="../index.html" id="btn-lyricsmith" class="btn" aria-label="Go to Hill Rd. Song Manager" title="Go to Hill Rd. Song Manager"><i class="fa-solid fa-music" aria-hidden="true"></i></a>
+        <button type="button" id="btn-theme" class="btn" aria-label="Toggle light or dark theme"><i class="fa-solid fa-sun" aria-hidden="true"></i></button>
+        <button type="button" id="btn-new" class="btn" aria-label="New session (clear output)"><i class="fa-solid fa-plus" aria-hidden="true"></i></button>
+        <button type="button" id="btn-library" class="btn" aria-label="Library" aria-controls="library-panel" aria-expanded="false"><i class="fa-solid fa-book" aria-hidden="true"></i></button>
+        <button type="button" id="btn-settings" class="btn btn-primary" aria-label="Settings" aria-controls="settings-drawer" aria-expanded="false"><i class="fa-solid fa-gear" aria-hidden="true"></i></button>
+      </div>
+    </header>
+
+  <main class="main-grid">
+    <!-- Compose Pane -->
+    <section class="compose" aria-labelledby="compose-title">
+      <h2 id="compose-title" class="sr-only">Compose</h2>
+
+      <div class="preset-tabs" role="tablist" aria-label="Presets">
+        <button type="button" role="tab" data-preset="FULL" aria-selected="false">Full Song</button>
+        <button type="button" role="tab" data-preset="TRUNCATED" aria-selected="false">Viral</button>
+        <button type="button" role="tab" data-preset="CHORUS" aria-selected="false">Chorus</button>
+        <button type="button" role="tab" data-preset="HOOK" aria-selected="true">Hook</button>
+        <button type="button" role="tab" data-preset="TITLE" aria-selected="false">Title</button>
+      </div>
+
+      <div class="lens-toggles" role="group" aria-label="Lens">
+        <label><input type="radio" name="lens" value="NONE" checked>None</label>
+        <label><input type="radio" name="lens" value="COUNTRY">Country</label>
+        <label><input type="radio" name="lens" value="VINTAGE">Vintage</label>
+        <label><input type="radio" name="lens" value="PUNK">Punk</label>
+        <label><input type="radio" name="lens" value="BLUES">Blues</label>
+        <label><input type="radio" name="lens" value="ROCK">Rock</label>
+        <label><input type="radio" name="lens" value="POP">Pop</label>
+        <label><input type="radio" name="lens" value="SATIRE">Satire</label>
+      </div>
+
+      <label class="seed-label" for="seed">Topic / Seed (or paste existing lyrics)</label>
+      <textarea id="seed" class="seed" rows="7" placeholder="e.g., &quot;grandma stole my vape&quot; or paste lyrics to expand..."></textarea>
+
+      <div class="compose-actions">
+        <button type="button" id="btn-generate" class="btn btn-primary" aria-keyshortcuts="Ctrl+Enter Meta+Enter">Generate</button>
+        <button type="button" id="btn-batch" class="btn" title="Generate 5 variants">Batch x5</button>
+        <button type="button" id="btn-stop" class="btn btn-danger" disabled aria-keyshortcuts="Esc">Stop</button>
+      </div>
+
+      <div class="status-line" aria-live="polite">
+        <span id="status-length">0 chars • ~0 tok</span>
+        <span id="status-elapsed">0.0s</span>
+        <span id="status-msg"></span>
+      </div>
+    </section>
+
+    <!-- Output Panel -->
+    <section class="output" aria-labelledby="output-title">
+      <h2 id="output-title" class="sr-only">Output</h2>
+
+      <div class="subtabs" role="tablist" aria-label="Output view">
+        <button type="button" role="tab" data-view="formatted" aria-selected="true">Formatted</button>
+        <button type="button" role="tab" data-view="plain" aria-selected="false">Plain Text</button>
+        <button type="button" role="tab" data-view="captions" aria-selected="false">Captions</button>
+      </div>
+
+      <div id="output-scroller" class="output-scroller">
+        <div id="out-formatted" class="out-view out-formatted" aria-live="polite"></div>
+        <textarea id="out-plain" class="out-view" aria-label="Plain text output" hidden></textarea>
+        <pre id="out-captions" class="out-view" aria-live="polite" hidden></pre>
+      </div>
+
+      <div class="quick-actions">
+        <button type="button" id="btn-copy-all" class="btn">Copy All</button>
+        <button type="button" id="btn-copy-chorus" class="btn" disabled>Copy Chorus</button>
+        <button type="button" id="btn-copy-hook" class="btn" disabled>Copy Hook</button>
+        <button type="button" id="btn-copy-captions" class="btn">Copy Captions</button>
+        <button type="button" id="btn-export" class="btn">Export .txt</button>
+        <button type="button" id="btn-save-notes" class="btn">Save Notes</button>
+      </div>
+    </section>
+
+    <!-- Library Panel -->
+    <aside id="library-panel" class="library" aria-labelledby="library-title" hidden>
+      <div class="library-header">
+        <h2 id="library-title">Library</h2>
+        <div class="lib-actions">
+          <button type="button" id="btn-export-starred" class="btn">Export Starred</button>
+          <button type="button" id="btn-close-library" class="btn" aria-label="Close Library">Close</button>
+        </div>
+      </div>
+
+      <div class="library-filters">
+        <input id="lib-search" type="search" placeholder="Search ( / )" aria-label="Search library">
+        <select id="lib-tag-filter" aria-label="Filter by tag">
+          <option value="">All Tags</option>
+        </select>
+        <select id="lib-model-filter" aria-label="Filter by model">
+          <option value="">All Models</option>
+        </select>
+        <label class="inline"><input id="lib-starred-only" type="checkbox"> Starred</label>
+      </div>
+
+      <ul id="lib-list" class="lib-list" aria-live="polite"></ul>
+    </aside>
+  </main>
+
+  <!-- Settings Drawer -->
+  <div id="settings-overlay" class="overlay" hidden></div>
+  <aside id="settings-drawer" class="settings" aria-labelledby="settings-title" role="dialog" aria-modal="true" hidden>
+    <header class="settings-header">
+      <h2 id="settings-title">Settings</h2>
+    </header>
+    <div class="settings-body">
+      <label>OpenRouter API Key
+        <input type="password" id="api-key" autocomplete="off" placeholder="sk-or-v1-...">
+      </label>
+      <p class="hint">This app stores your key in your browser only.</p>
+
+      <div class="model-row">
+        <label>Model
+          <input type="text" id="model" list="model-presets" placeholder="deepseek/deepseek-chat-v3.1:free">
+          <datalist id="model-presets">
+            <option value="deepseek/deepseek-chat-v3.1:free"></option>
+            <option value="google/gemini-2.0-flash-exp:free"></option>
+            <option value="meta-llama/llama-3.1-8b-instruct:free"></option>
+            <option value="qwen/qwen-2.5-14b-instruct:free"></option>
+          </datalist>
+        </label>
+      </div>
+
+      <div class="sliders">
+        <label>Temperature <input type="range" id="temperature" min="0" max="1" step="0.01"><span id="val-temperature"></span></label>
+        <label>Top-p <input type="range" id="top_p" min="0" max="1" step="0.01"><span id="val-top_p"></span></label>
+        <label>Max tokens <input type="range" id="max_tokens" min="50" max="1200" step="10"><span id="val-max_tokens"></span></label>
+      </div>
+
+      <label>Stop tokens (optional, comma-separated)
+        <input type="text" id="stop_tokens" placeholder=","><!-- intentional: hint that comma separates, no defaults -->
+      </label>
+
+      <fieldset>
+        <legend>Defaults</legend>
+        <div class="inline">
+          <label><input type="radio" name="default-preset" value="FULL"> Full Song</label>
+          <label><input type="radio" name="default-preset" value="TRUNCATED"> Truncated</label>
+          <label><input type="radio" name="default-preset" value="CHORUS"> Chorus</label>
+          <label><input type="radio" name="default-preset" value="HOOK" checked> Hook</label>
+          <label><input type="radio" name="default-preset" value="TITLE"> Title</label>
+        </div>
+        <div class="inline">
+          <label><input type="radio" name="default-lens" value="NONE" checked> None</label>
+          <label><input type="radio" name="default-lens" value="COUNTRY"> Country</label>
+          <label><input type="radio" name="default-lens" value="VINTAGE"> Vintage</label>
+          <label><input type="radio" name="default-lens" value="PUNK"> Punk</label>
+          <label><input type="radio" name="default-lens" value="SATIRE"> Satire</label>
+        </div>
+      </fieldset>
+
+      <div class="toggles">
+        <label class="inline"><input type="checkbox" id="nsfw_lean"> NSFW-leaning prompts allowed (label only)</label>
+        <label class="inline"><input type="checkbox" id="char_cap"> Enforce character caps (recommended)</label>
+        <label class="inline"><input type="checkbox" id="rich_fmt"> Rich formatted view</label>
+        <label class="inline"><input type="checkbox" id="compact_mode"> Compact mode (tighter spacing)</label>
+      </div>
+
+      <div class="settings-footer">
+        <button type="button" id="btn-clear-data" class="btn btn-danger">Clear All Data</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-save-settings" class="btn btn-primary">Save</button>
+        <button type="button" id="btn-close-settings" class="btn">Close</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Modal (Refine / Add Verse / Add Bridge) -->
+  <div id="mini-modal-overlay" class="overlay" hidden></div>
+  <div id="mini-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="mini-title" hidden>
+    <header class="modal-header" aria-labelledby="mini-title">
+      <h3 id="mini-title">Action</h3>
+    </header>
+    <div class="modal-body">
+      <pre id="mini-stream" class="mini-stream" aria-live="polite"></pre>
+    </div>
+    <footer class="modal-footer">
+      <button type="button" id="mini-save" class="btn btn-primary">Save</button>
+      <button type="button" id="mini-cancel" class="btn">Cancel</button>
+    </footer>
+  </div>
+
+  <template id="lib-card-template">
+    <li class="lib-card" data-id="">
+      <div class="lib-card-head">
+        <div>
+          <div class="lib-title"></div>
+          <div class="lib-meta">
+            <span class="badge preset"></span>
+            <span class="badge lens"></span>
+            <span class="badge model small"></span>
+            <span class="time"></span>
+          </div>
+        </div>
+        <button type="button" class="star" title="Star">☆</button>
+      </div>
+      <pre class="lib-output"></pre>
+      <div class="lib-tags">
+        <input class="tag-editor" type="text" placeholder="#tags (comma or space)">
+      </div>
+      <div class="lib-actions">
+        <button type="button" class="copy">Copy</button>
+        <button type="button" class="export">Export</button>
+        <button type="button" class="refine">Refine</button>
+        <button type="button" class="refine2">Refine — Shorter &amp; Louder</button>
+        <button type="button" class="add-verse">Add Verse</button>
+        <button type="button" class="add-bridge">Add Bridge</button>
+        <button type="button" class="delete btn-danger">Delete</button>
+      </div>
+    </li>
+  </template>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  
+
+
+  <script src="presets.js"></script>
+  <script src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

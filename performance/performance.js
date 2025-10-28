@@ -9,6 +9,16 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => { toast.style.opacity = '0'; toast.style.transform = 'translateX(100%)'; setTimeout(() => toast.remove(), 300); }, timeout);
   }
 
+  // ==== SIMPLE ESCAPER (avoid XSS in titles) ====
+  function escapeHtml(str = '') {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   // ==== DATA ACCESS (localStorage) ====
   const Store = {
     getSongs() {
@@ -202,7 +212,7 @@ document.addEventListener('DOMContentLoaded', () => {
       let lines = content.split('\n').map(l=>l.trim());
       const normTitle = String(song.title||'').trim().toLowerCase();
       let removed = 0; while (lines.length && removed < 2) { if (!lines[0] || lines[0].toLowerCase() === normTitle) { lines.shift(); removed++; } else break; }
-      this.performanceSongInfo.innerHTML = `<h2>${song.title}</h2><div class="song-progress">${this.currentPerformanceSongIndex+1} / ${this.performanceSongs.length}</div>`;
+      this.performanceSongInfo.innerHTML = `<h2>${escapeHtml(song.title)}</h2><div class="song-progress">${this.currentPerformanceSongIndex+1} / ${this.performanceSongs.length}</div>`;
       this.lyricsDisplay.textContent = lines.join('\n');
       const fs = (typeof this.perSongFontSizes[song.id] === 'number') ? this.perSongFontSizes[song.id] : this.fontSize;
       this.fontSize = fs; this.updateFontSize();

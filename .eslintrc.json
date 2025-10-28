@@ -1,0 +1,31 @@
+{
+  "env": {
+    "browser": true,
+    "es2021": true
+  },
+  "extends": ["eslint:recommended"],
+  "parserOptions": {
+    "ecmaVersion": 2021,
+    "sourceType": "script"
+  },
+  "globals": {
+    "Sortable": "readonly",
+    "Fuse": "readonly",
+    "mammoth": "readonly",
+    "ClipboardManager": "writable"
+  },
+  "ignorePatterns": [
+    "lib/**",
+    "**/*.min.js",
+    "**/vendor/**",
+    ".git/**",
+    "assets/**"
+  ],
+  "rules": {
+    "no-unused-vars": ["warn", { "args": "none", "varsIgnorePattern": "^_" }],
+    "no-undef": "error",
+    "no-implied-eval": "error",
+    "no-console": ["warn", { "allow": ["warn", "error"] }]
+  }
+}
+

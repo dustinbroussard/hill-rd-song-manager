@@ -1830,3 +1830,4 @@ textarea:focus,
 @media (prefers-reduced-motion: reduce) {
   .transition-base, .fade-in, .scale-in, .btn, .song-item, .icon-btn, .toast { transition: none !important; animation: none !important; }
 }
+

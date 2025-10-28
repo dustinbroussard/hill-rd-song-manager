@@ -56,3 +56,9 @@ Browser support
 
 ### Duplicate Handling on Import
 - When importing JSON, Hill Rd. Song Manager detects duplicate titles vs your current library and asks whether to skip duplicates or import copies. Copies are suffixed with “(Copy N)”.
+
+## Development
+
+- Linting: `npm run lint` (uses ESLint with `eslint:recommended`).
+- Auto-fix: `npm run lint:fix` for safe, automatic fixes.
+- CI: GitHub Actions runs lint on pushes and PRs.

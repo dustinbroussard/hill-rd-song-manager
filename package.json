@@ -7,9 +7,14 @@
     "lib": "lib"
   },
   "scripts": {
-    "test": "echo \"No tests specified\""
+    "test": "echo \"No tests specified\"",
+    "lint": "eslint . --ext .js",
+    "lint:fix": "eslint . --ext .js --fix"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
 }

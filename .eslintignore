@@ -1,9 +1,0 @@
-lib/
-assets/
-.git/
-**/*.min.js
-hook-mill/icons/
-**/webfonts/
-**/fontawesome/
-package-lock.json
-

@@ -282,8 +282,8 @@ const handleCopyOperation = async (song, copyType) => {
     return await ClipboardManager.copyToClipboard(textToCopy);
 };
 
-// Save song with updated metadata
-const saveCurrentSongWithMetadata = (song) => {
+// Save song with updated metadata (persist to IndexedDB via EditorDB)
+const saveCurrentSongWithMetadata = async (song) => {
     // Update metadata from form
     song.key = document.getElementById('song-key')?.value || '';
     song.tempo = parseInt(document.getElementById('song-tempo')?.value) || 120;
@@ -296,32 +296,28 @@ const saveCurrentSongWithMetadata = (song) => {
     
     // Update timestamp
     song.lastEditedAt = new Date().toISOString();
-    
-    // Save to localStorage
-    const songs = JSON.parse(localStorage.getItem('songs') || '[]');
-    const songIndex = songs.findIndex(s => s.id === song.id);
-    if (songIndex !== -1) {
-        songs[songIndex] = song;
-        try { localStorage.setItem('songs', JSON.stringify(songs)); window.StorageSafe?.snapshotLater?.('editor:metaSave'); } catch {}
+
+    try {
+        // Persist single song; main app will ignore extra fields
+        await window.EditorDB?.putSong?.(song);
+    } catch (e) {
+        console.warn('Failed to persist song metadata to DB', e);
     }
-    
+
     return song;
 };
 
 
-function safeLocalStorageSet(key, value) {
-    try { localStorage.setItem(key, value); try { window.StorageSafe?.snapshotLater?.('editor:helperSet'); } catch {} return true; }
-    catch (e) { console.warn('localStorage write failed', e); try { window.StorageSafe?.snapshotWithData?.(value, 'editor:helperFail'); } catch {} return false; }
-}
-function safeLocalStorageGet(key, fallback='[]') {
-    try { return localStorage.getItem(key) ?? fallback; }
-    catch(e){ return fallback; }
-}
+// Retained for compatibility in other flows (no-ops here)
+function safeLocalStorageSet(key, value) { try { localStorage.setItem(key, value); return true; } catch { return false; } }
+function safeLocalStorageGet(key, fallback='[]') { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }
 
 
 function exportAllSongs(filename = 'lyricsmith_songs.json') {
-    const data = safeLocalStorageGet('songs', '[]');
-    const blob = new Blob([data], { type: 'application/json' });
+    // Export songs currently stored in IDB
+    let all = [];
+    try { all = await window.EditorDB?.getAllSongs?.() || []; } catch {}
+    const blob = new Blob([JSON.stringify(all)], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = filename;
@@ -338,7 +334,7 @@ async function importSongs(file) {
         // Accept either an array of songs or { songs: [...] }
         let incoming = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.songs) ? parsed.songs : []);
         if (!Array.isArray(incoming)) throw new Error('Invalid format');
-        const existing = JSON.parse(safeLocalStorageGet('songs', '[]'));
+        const existing = await (window.EditorDB?.getAllSongs?.() || []);
         const byId = new Map(existing.map(s => [s.id, s]));
         const norm = (t)=> String(t||'').trim().toLowerCase();
         const existingTitles = new Set(existing.map(s=> norm(s.title)));
@@ -364,7 +360,7 @@ async function importSongs(file) {
             byId.set(id, song);
         }
         const merged = Array.from(byId.values());
-        if (!safeLocalStorageSet('songs', JSON.stringify(merged))) throw new Error('Storage failed');
+        try { await window.EditorDB?.putSongs?.(merged); } catch (e) { throw e; }
         try { window.StorageSafe?.snapshotLater?.('editor:import'); } catch {}
         return merged;
     } catch (e) {

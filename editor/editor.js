@@ -641,14 +641,12 @@ function enforceAlternating(lines) {
             return titleIsDefault && hasOnlyDefaultLyrics && chordsEmpty && notesEmpty && noTags;
         },
 
-        deleteSongById(id) {
+        async deleteSongById(id) {
             const idx = this.songs.findIndex(s => String(s.id) === String(id));
             if (idx !== -1) {
                 this.songs.splice(idx, 1);
-                try {
-                    localStorage.setItem('songs', JSON.stringify(this.songs));
-                    window.StorageSafe?.snapshotLater?.('editor:delete');
-                } catch {}
+                try { await window.EditorDB?.deleteSong?.(id); } catch {}
+                try { window.StorageSafe?.snapshotLater?.('editor:delete'); } catch {}
             }
         },
 
@@ -678,7 +676,7 @@ function enforceAlternating(lines) {
         },
         async loadData() {
             try { await window.StorageSafe?.init?.(); } catch {}
-            this.songs = JSON.parse(localStorage.getItem('songs')) || [];
+            try { this.songs = await (window.EditorDB?.getAllSongs?.() || []); } catch { this.songs = []; }
             const theme = localStorage.getItem('theme') || 'dark';
             document.documentElement.dataset.theme = theme;
             setThemeColorMeta(theme);
@@ -710,7 +708,7 @@ function enforceAlternating(lines) {
                 seen.add(id);
             });
             if (changed) {
-                this.safeLocalStorageSet('songs', JSON.stringify(this.songs));
+                try { window.EditorDB?.putSongs?.(this.songs); } catch {}
             }
             this.idRemap = remap;
         },
@@ -1642,7 +1640,7 @@ function enforceAlternating(lines) {
         },
 
         
-    saveCurrentSong(isExplicit = false) {
+    async saveCurrentSong(isExplicit = false) {
         if (!this.currentSong || (!window.CONFIG.autosaveEnabled && !isExplicit)) return;
         this.showSaveStatus('saving');
         try {
@@ -1678,15 +1676,13 @@ function enforceAlternating(lines) {
             if (songIndex !== -1) {
                 this.songs[songIndex] = this.currentSong;
             }
-            const ok = this.safeLocalStorageSet('songs', JSON.stringify(this.songs));
-            if (ok) {
+            try { await window.EditorDB?.putSong?.(this.currentSong); } catch {}
+            {
                 this.hasUnsavedChanges = false;
                 this.showSaveStatus('saved');
                 if (isExplicit && typeof ClipboardManager !== 'undefined' && ClipboardManager.showToast) {
                     try { ClipboardManager.showToast('Saved', 'success'); } catch {}
                 }
-            } else {
-                this.showSaveStatus('error');
             }
         } catch (e) {
             console.error('saveCurrentSong failed', e);

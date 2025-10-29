@@ -1,1977 +1,2039 @@
-document.addEventListener('DOMContentLoaded', () => {
-  // Ensure touch devices trigger button actions
-  document.addEventListener(
-    'touchstart',
-    (e) => {
-      const btn = e.target.closest('button');
-      if (btn) {
-        e.preventDefault();
-        btn.click();
-      }
-    },
-    { passive: false }
-  );
-  // === THEME TOGGLE ===
-  function getSystemPreferredTheme() {
-    try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'default-dark' : 'default-light'; } catch { return 'default-dark'; }
-  }
-  function resolveEffectiveTheme(name) {
-    if (!name) return 'default-dark';
-    if (name === 'system') return getSystemPreferredTheme();
-    if (name === 'dark') return 'default-dark';
-    if (name === 'light') return 'default-light';
-    return name;
-  }
-  let savedTheme = localStorage.getItem('theme') || 'default-dark';
-  const effective = resolveEffectiveTheme(savedTheme);
-  localStorage.setItem('theme', savedTheme);
-  document.documentElement.dataset.theme = effective;
-  // Live-update on system theme change when in System mode
-  try {
-    const mm = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-    if (mm && typeof mm.addEventListener === 'function') {
-      mm.addEventListener('change', () => {
-        const t = localStorage.getItem('theme') || 'default-dark';
-        if (t === 'system') applyTheme('system');
-      });
+// ==== THEME HANDLING ====
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize theme with strict dark/light only
+    let savedTheme = localStorage.getItem('theme');
+    if (savedTheme !== 'dark' && savedTheme !== 'light') {
+        savedTheme = 'dark';
+        localStorage.setItem('theme', 'dark');
     }
-  } catch {}
+    document.documentElement.dataset.theme = savedTheme;
+});
 
-  function setThemeColorMeta(theme) {
-    try {
-      const meta = document.querySelector('meta[name="theme-color"]') || (function(){
-        const m = document.createElement('meta');
-        m.name = 'theme-color';
-        document.head.appendChild(m);
-        return m;
-      })();
-      const isDark = /dark/i.test(String(theme||''));
-      meta.setAttribute('content', isDark ? '#000000' : '#ffffff');
-    } catch {}
-  }
-  setThemeColorMeta(effective);
+// ==== DB MODULE (IndexedDB via idb) ====
+/* global idb */
+const DB = (() => {
+  const DB_NAME = 'hrr-setlist-db';
+  const DB_VERSION = 1; // bump when schema changes
+  let _db;
 
-  function applyTheme(name) {
-    const actual = resolveEffectiveTheme(name);
-    document.documentElement.dataset.theme = actual;
-    localStorage.setItem('theme', name);
-    setThemeColorMeta(actual);
-    try { const sel = document.getElementById('theme-select'); if (sel) sel.value = name; } catch {}
-    try { ClipboardManager.showToast(`Theme: ${name === 'system' ? `System (${actual})` : name}`, 'info'); } catch {}
-  }
-
-  function attachThemeToggle() {
-    const themeToggleBtn = document.getElementById('theme-toggle-btn');
-    themeToggleBtn?.addEventListener('click', () => {
-      const stored = localStorage.getItem('theme') || 'default-dark';
-      if (stored === 'system') {
-        // Toggle away from system to explicit opposite of current effective
-        const cur = resolveEffectiveTheme('system');
-        applyTheme(/dark/i.test(cur) ? 'default-light' : 'default-dark');
-        return;
-      }
-      const cur = resolveEffectiveTheme(stored);
-      const next = /dark/i.test(cur) ? cur.replace(/dark/i,'light') : cur.replace(/light/i,'dark');
-      applyTheme(next || (cur.includes('dark') ? 'default-light' : 'default-dark'));
-    });
-    const themeSelect = document.getElementById('theme-select');
-    if (themeSelect) {
-      themeSelect.value = savedTheme;
-      themeSelect.addEventListener('change', (e)=> applyTheme(e.target.value));
-    }
-  }
-
-  // Settings menu popover
-  function attachSettingsMenu() {
-    const btn = document.getElementById('settings-btn');
-    const overlay = document.getElementById('settings-menu');
-    if (!btn || !overlay) return;
-    const closeMenu = () => {
-      if (overlay.hidden) return;
-      btn.setAttribute('aria-expanded', 'false');
-      overlay.hidden = true;
-      try { document.body.classList.remove('no-scroll'); } catch {}
-    };
-    const openMenu = () => {
-      btn.setAttribute('aria-expanded', 'true');
-      overlay.hidden = false;
-      try { document.body.classList.add('no-scroll'); } catch {}
-    };
-    const toggleMenu = () => { if (overlay.hidden) openMenu(); else closeMenu(); };
-    btn.addEventListener('click', (e) => { e.stopPropagation(); toggleMenu(); });
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay || e.target.closest('.modal-close-x')) closeMenu();
-    });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
-  }
-
-  // Global busy overlay helpers
-  function showGlobalBusy(text = 'Working…') {
-    try {
-      const overlay = document.getElementById('busy-overlay');
-      const label = document.getElementById('busy-text');
-      if (!overlay || !label) return;
-      label.textContent = text;
-      overlay.hidden = false;
-      overlay.classList.add('show');
-    } catch {}
-  }
-  function hideGlobalBusy() {
-    try {
-      const overlay = document.getElementById('busy-overlay');
-      if (!overlay) return;
-      overlay.classList.remove('show');
-      overlay.hidden = true;
-    } catch {}
-  }
-
-  // === PWA INSTALL PROMPT ===
-  function attachInstallPromptHandlers() {
-    const sessionKey = 'pwaInstallDecision'; // 'accepted' | 'dismissed'
-    const installedFlag = 'pwaInstalled';
-    const isStandalone = () => {
-      try {
-        return (
-          (window.matchMedia && (window.matchMedia('(display-mode: standalone)').matches ||
-          window.matchMedia('(display-mode: window-controls-overlay)').matches)) ||
-          (navigator.standalone === true)
-        );
-      } catch { return false; }
-    };
-
-    if (isStandalone()) {
-      try { localStorage.setItem(installedFlag, '1'); } catch {}
-    }
-
-    let deferredPrompt = null;
-
-    function ensureToastContainer() {
-      let container = document.querySelector('.toast-container');
-      if (!container) {
-        container = document.createElement('div');
-        container.className = 'toast-container';
-        document.body.appendChild(container);
-      }
-      return container;
-    }
-
-    function showInstallToast() {
-      if (sessionStorage.getItem(sessionKey)) return;
-      if (isStandalone() || localStorage.getItem(installedFlag) === '1') return;
-      if (!deferredPrompt) return; // wait until browser says we can prompt
-      // Optional frequency control: set localStorage('pwaPromptFrequency') to 'daily' or 'weekly'
-      try {
-        const freq = (localStorage.getItem('pwaPromptFrequency') || 'session').toLowerCase();
-        const nextAt = parseInt(localStorage.getItem('pwaPromptNextTime') || '0', 10) || 0;
-        const now = Date.now();
-        if (nextAt && now < nextAt) return;
-        let next = 0;
-        if (freq === 'daily') next = now + 24*60*60*1000;
-        else if (freq === 'weekly') next = now + 7*24*60*60*1000;
-        if (next > 0) localStorage.setItem('pwaPromptNextTime', String(next));
-      } catch {}
-
-      const container = ensureToastContainer();
-      const toast = document.createElement('div');
-      toast.className = 'toast toast-info toast-sticky';
-      const msg = document.createElement('div');
-      msg.className = 'toast-content';
-      msg.textContent = 'Install Hill Rd. Song Manager?';
-      const actions = document.createElement('div');
-      actions.style.display = 'flex';
-      actions.style.gap = '0.5rem';
-      actions.style.marginTop = '0.25rem';
-      const installBtn = document.createElement('button');
-      installBtn.className = 'btn';
-      installBtn.textContent = 'Install';
-      const laterBtn = document.createElement('button');
-      laterBtn.className = 'btn';
-      laterBtn.textContent = 'Not now';
-      actions.appendChild(installBtn);
-      actions.appendChild(laterBtn);
-      toast.appendChild(msg);
-      toast.appendChild(actions);
-
-      const close = () => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-      };
-      laterBtn.addEventListener('click', () => {
-        sessionStorage.setItem(sessionKey, 'dismissed');
-        close();
-      });
-      installBtn.addEventListener('click', async () => {
-        try {
-          const dp = deferredPrompt;
-          if (!dp) return;
-          dp.prompt();
-          const choice = await dp.userChoice;
-          if (choice && choice.outcome === 'accepted') {
-            sessionStorage.setItem(sessionKey, 'accepted');
-            try { ClipboardManager.showToast('Thanks for installing!', 'success'); } catch {}
-          } else {
-            sessionStorage.setItem(sessionKey, 'dismissed');
-          }
-        } finally {
-          deferredPrompt = null; // Chrome requires one-use
-          close();
+  async function open() {
+    if (_db) return _db;
+    _db = await idb.openDB(DB_NAME, DB_VERSION, {
+      upgrade(db) {
+        if (!db.objectStoreNames.contains('songs')) {
+          const songs = db.createObjectStore('songs', { keyPath: 'id' });
+          if (songs.createIndex) songs.createIndex('title', 'title', { unique: false });
         }
-      });
-
-      container.appendChild(toast);
-      setTimeout(() => toast.classList.add('show'), 10);
-    }
-
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      window.__deferredPwaPrompt = e;
-      showInstallToast();
-    });
-
-    window.addEventListener('appinstalled', () => {
-      try { localStorage.setItem(installedFlag, '1'); } catch {}
-      sessionStorage.setItem(sessionKey, 'accepted');
-      try { ClipboardManager.showToast('App installed!', 'success'); } catch {}
-    });
-  }
-
-  attachThemeToggle();
-  attachSettingsMenu();
-  attachInstallPromptHandlers();
-
-  // === HOOK MILL INTEGRATION ===
-  function attachHookMillButton() {
-    const btn = document.getElementById('hookmill-btn');
-    if (!btn) return;
-
-    btn.addEventListener('click', async (e) => {
-      // Quick open shortcut: Shift or Meta key
-      if (e.shiftKey || e.metaKey || e.ctrlKey) {
-        window.open('hook-mill/index.html', '_blank');
-        return;
-      }
-
-      const choice = (prompt('Hook Mill: type "open" to open, "starred" to sync starred, or "all" to sync all.', 'starred') || '').trim().toLowerCase();
-      if (choice === 'open') {
-        window.open('hook-mill/index.html', '_blank');
-        return;
-      }
-      if (choice === 'all' || choice === 'starred' || choice === '') {
-        const starredOnly = choice !== 'all';
-        btn.classList.add('loading');
-        try {
-          await app.syncHookMill(starredOnly);
-        } finally {
-          btn.classList.remove('loading');
+        if (!db.objectStoreNames.contains('setlists')) {
+          const setlists = db.createObjectStore('setlists', { keyPath: 'id' });
+          if (setlists.createIndex) setlists.createIndex('name', 'name', { unique: false });
+        }
+        if (!db.objectStoreNames.contains('meta')) {
+          db.createObjectStore('meta'); // for flags like 'migrated'
         }
       }
     });
+    return _db;
   }
 
-  // Open Hook Mill IndexedDB, fall back to localStorage mirror if needed
-  async function getHookMillItems() {
-    const fromLocal = () => {
-      const items = [];
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && k.startsWith('HM_LIB_') && k !== 'HM_LIB_') {
-            const raw = localStorage.getItem(k);
-            if (!raw) continue;
-            try { items.push(JSON.parse(raw)); } catch {}
-          }
-        }
-      } catch {}
-      return items;
-    };
-
-    try {
-      if (!('indexedDB' in window)) return fromLocal();
-      const db = await new Promise((resolve, reject) => {
-        const req = indexedDB.open('hook-mill', 1);
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => resolve(null);
-      });
-      if (!db) return fromLocal();
-      const items = await new Promise((resolve) => {
-        try {
-          const tx = db.transaction('library', 'readonly');
-          const store = tx.objectStore('library');
-          const all = store.getAll();
-          all.onsuccess = () => resolve(all.result || []);
-          all.onerror = () => resolve([]);
-        } catch {
-          resolve([]);
-        }
-      });
-      return Array.isArray(items) ? items : [];
-    } catch {
-      return fromLocal();
-    }
+  async function getMeta(key) {
+    const db = await open();
+    return db.get('meta', key);
+  }
+  async function setMeta(key, val) {
+    const db = await open();
+    return db.put('meta', val, key);
   }
 
-  // === TEXT → {lyrics, chords} SPLITTER ===
-  function splitLyricsAndChordsFromText(rawText = '') {
-    const prefix = (window.CONFIG && window.CONFIG.chordLinePrefix) || '~';
-    const hasMarker = rawText
-      .split(/\r?\n/)
-      .some(line => line.trim().startsWith(prefix));
-    // Fast path: no chord markers at all → purely lyrics
-    if (!hasMarker && window.CONFIG?.assumeNoChords !== false) {
-      return { lyrics: app.normalizeSectionLabels(rawText || ''), chords: '' };
-    }
-
-    const lines = (rawText || '').replace(/\r\n?/g, '\n').split('\n');
-    const lyricsLines = [];
-    const chordLines = [];
-    let pendingChord = null;
-    const isSection = (s) =>
-      /^\s*[\(\[\{].*[\)\]\}]\s*$/.test(s.trim()) || /^\s*\[.*\]\s*$/.test(s.trim());
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      const trimmed = line.trim();
-      if (trimmed.startsWith(prefix)) {
-        // chord line → keep last one wins
-        const chord = trimmed.slice(prefix.length).replace(/^\s/, '');
-        pendingChord = chord;
-        continue;
-      }
-      // Treat the line as lyrics (including section labels and blank lines)
-      lyricsLines.push(line);
-      if (trimmed === '' || isSection(trimmed)) {
-        // Never attach chords to empty lines or section labels
-        chordLines.push('');
-        pendingChord = null;
-      } else {
-        chordLines.push(pendingChord || '');
-        pendingChord = null;
-      }
-    }
-
-    return {
-      lyrics: app.normalizeSectionLabels(lyricsLines.join('\n')),
-      chords: chordLines.join('\n')
-    };
+  // Songs
+  async function getAllSongs() {
+    const db = await open();
+    return db.getAll('songs');
+  }
+  async function putSong(song) {
+    const db = await open();
+    return db.put('songs', song);
+  }
+  async function putSongs(songs) {
+    const db = await open();
+    const tx = db.transaction('songs', 'readwrite');
+    for (const s of songs) await tx.store.put(s);
+    await tx.done;
+  }
+  async function deleteSong(id) {
+    const db = await open();
+    return db.delete('songs', id);
+  }
+  async function clearSongs() {
+    const db = await open();
+    const tx = db.transaction('songs', 'readwrite');
+    await tx.store.clear();
+    await tx.done;
   }
 
-  // === CLIPBOARD MANAGER ===
-  function escapeHtml(str = '') {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+  // Setlists
+  async function getAllSetlists() {
+    const db = await open();
+    return db.getAll('setlists');
   }
-  class ClipboardManager {
-    static async copyToClipboard(text, showToast = true) {
-      try {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          // Fallback for mobile/older browsers
-          const textArea = document.createElement('textarea');
-          textArea.value = text;
-          textArea.style.position = 'fixed';
-          textArea.style.left = '-999999px';
-          textArea.style.top = '-999999px';
-          document.body.appendChild(textArea);
-          textArea.focus();
-          textArea.select();
-          document.execCommand('copy');
-          textArea.remove();
-        }
-        
-        if (showToast) {
-          this.showToast('Copied to clipboard!', 'success');
-        }
-        return true;
-      } catch (err) {
-        console.error('Failed to copy:', err);
-        if (showToast) {
-          this.showToast('Failed to copy to clipboard', 'error');
-        }
-        return false;
-      }
-    }
-
-    static showToast(message, type = 'info', duration = 3000) {
-      let container = document.querySelector('.toast-container');
-      if (!container) {
-        container = document.createElement('div');
-        container.className = 'toast-container';
-        document.body.appendChild(container);
-      }
-
-      const toast = document.createElement('div');
-      toast.className = `toast toast-${type}`;
-      toast.setAttribute('role', 'status');
-      toast.setAttribute('tabindex', '0');
-
-      const content = document.createElement('div');
-      content.className = 'toast-content';
-      content.textContent = message;
-      toast.appendChild(content);
-
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'toast-close';
-      closeBtn.setAttribute('aria-label', 'Close');
-      closeBtn.innerHTML = '&times;';
-      closeBtn.onclick = () => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-      };
-      toast.appendChild(closeBtn);
-
-      toast.addEventListener('click', () => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-      });
-
-      toast.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          toast.classList.remove('show');
-          setTimeout(() => toast.remove(), 300);
-        }
-      });
-
-      container.appendChild(toast);
-      setTimeout(() => toast.classList.add('show'), 10);
-
-      if (duration <= 0) {
-        toast.classList.add('toast-sticky');
-        return;
-      }
-
-      setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
-      }, duration);
-    }
-
-    static formatLyricsWithChords(lyrics, chords) {
-      const lyricLines = lyrics.split('\n');
-      const chordLines = chords.split('\n');
-      
-      return lyricLines.map((lyricLine, i) => {
-        const chordLine = chordLines[i] || '';
-        if (chordLine.trim()) {
-          return `${chordLine}\n${lyricLine}`;
-        }
-        return lyricLine;
-      }).join('\n');
-    }
+  async function getSetlist(id) {
+    const db = await open();
+    return db.get('setlists', id);
+  }
+  async function putSetlist(setlist) {
+    const db = await open();
+    return db.put('setlists', setlist);
+  }
+  async function deleteSetlist(id) {
+    const db = await open();
+    return db.delete('setlists', id);
   }
 
-  // === APP LOGIC ===
-  const app = {
-    songList: document.getElementById('song-list'),
-    songs: [],
-    // tabs
-    currentTab: 'songs',
-    // setlists state
-    setlists: [], // [{id,name,songs:[],createdAt,updatedAt}]
-    currentSetlistId: null,
-    performanceSetlistId: null,
-    currentSongId: null,
-    defaultSections: "[Intro]\n\n[Verse 1]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Verse 2]\n\n[Bridge]\n\n[Outro]",
-    sortOrder: localStorage.getItem('songSortOrder') || 'titleAsc',
+  return {
+    getMeta, setMeta,
+    getAllSongs, putSong, putSongs, deleteSong, clearSongs,
+    getAllSetlists, getSetlist, putSetlist, deleteSetlist,
+  };
+})();
 
-    async init() {
-      try { await window.StorageSafe?.init?.(); } catch {}
-      // Load mammoth for DOCX processing
-      if (typeof mammoth === 'undefined') {
-        console.warn('Mammoth.js not loaded - DOCX support will not work');
-      }
-
-      this.loadSongs();
-      this.renderSongs();
-      this.setupNav();
-      this.renderToolbar();
-      this.renderTabContent();
-      this.setupExportModal();
-      this.bindEvents();
-      this.initDragSort();
-
-      // Handle PWA shortcut-triggered creation
-      if (window.__CREATE_NEW_SONG_ON_LOAD__ === true) {
-        // Create and navigate to the editor for the new song
-        this.createNewSong();
-        // Ensure the flag is single-use
-        window.__CREATE_NEW_SONG_ON_LOAD__ = false;
-      }
-    },
-
-    // ===== NAV TABS =====
-    setupNav() {
-      const navButtons = Array.from(document.querySelectorAll('.nav-button'));
-      const showTab = (tab) => {
-        this.currentTab = tab;
-        document.querySelectorAll('.tab').forEach(sec => sec.classList.remove('active'));
-        document.querySelectorAll('.nav-button').forEach(btn => btn.classList.remove('active'));
-        document.getElementById(tab)?.classList.add('active');
-        document.querySelector(`.nav-button[data-tab="${tab}"]`)?.classList.add('active');
-        this.renderToolbar();
-        this.renderTabContent();
-      };
-      navButtons.forEach(btn => btn.addEventListener('click', () => showTab(btn.dataset.tab)));
-      // default
-      showTab('songs');
-    },
-
-    loadSongs() {
-      this.songs = JSON.parse(localStorage.getItem('songs') || '[]');
-      // Migrate old songs to new format
-      this.songs = this.songs.map(song => this.migrateSongFormat(song));
-      // Ensure unique IDs across the library
-      const changed = this.ensureUniqueIds();
-      if (changed) this.saveSongs();
-    },
-
-    migrateSongFormat(song) {
-      // Ensure all songs have the new metadata fields
-      const updated = {
-        id: song.id || this.generateId(),
-        title: song.title || 'Untitled',
-        lyrics: this.stripTitleFromLyrics(song.title || 'Untitled', this.normalizeSectionLabels(song.lyrics || '')),
-        chords: song.chords || '',
-        key: song.key || '',
-        tempo: song.tempo || 120,
-        timeSignature: song.timeSignature || '4/4',
-        notes: song.notes || '',
-        createdAt: song.createdAt || new Date().toISOString(),
-        lastEditedAt: song.lastEditedAt || new Date().toISOString(),
-        tags: song.tags || []
-      };
-      const spaced = this.normalizeSectionSpacing(updated.lyrics, updated.chords);
-      updated.lyrics = spaced.lyrics;
-      updated.chords = spaced.chords;
-      return updated;
-    },
-
-    createSong(title, lyrics = '', chords = '') {
-      const normalizedLyrics = lyrics.trim()
-        ? this.normalizeSectionLabels(lyrics)
-        : this.defaultSections;
-      const cleanLyrics = this.stripTitleFromLyrics(title, normalizedLyrics);
-      const spaced = this.normalizeSectionSpacing(cleanLyrics, chords);
-      return {
-        id: this.generateId(),
-        title,
-        lyrics: spaced.lyrics,
-        chords: spaced.chords,
-        key: '',
-        tempo: 120,
-        timeSignature: '4/4',
-        notes: '',
-        createdAt: new Date().toISOString(),
-        lastEditedAt: new Date().toISOString(),
-        tags: []
-      };
-    },
-
-    saveSongs() {
-      const data = JSON.stringify(this.songs);
-      try {
-        localStorage.setItem('songs', data);
-      } catch (e) {
-        console.warn('localStorage write failed', e);
-        try { window.StorageSafe?.snapshotWithData?.(data, 'main:lsFail'); } catch {}
-      }
-      try { window.StorageSafe?.snapshotLater?.('saveSongs'); } catch {}
-    },
-
-    generateId() {
-      return (
-        Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
-      );
-    },
-
-    ensureUniqueIds() {
-      const seen = new Set();
-      let changed = false;
-      for (const song of this.songs) {
-        let id = String(song.id || '');
-        if (!id || seen.has(id)) {
-          id = this.generateId();
-          song.id = id;
-          changed = true;
-        }
-        seen.add(id);
-      }
-      return changed;
-    },
-
-
-    normalizeTitle(title) {
-      return title
-        .replace(/\.[^/.]+$/, '')
+// ==== SETLIST MANAGER MODULE 
+function normalizeSetlistName(name) {
+    return name.replace(/\.[^/.]+$/, '')  // Remove file extension
         .replace(/[_\-]+/g, ' ')
+        .replace(/[^\w\s]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/\w\S*/g, w => w[0].toUpperCase() + w.slice(1).toLowerCase());
-    },
+        .toLowerCase()
+        .replace(/\b\w/g, c => c.toUpperCase());
+}
 
-    normalizeSectionLabels(text = '') {
-      const sectionKeywords = [
-        'intro',
-        'verse',
-        'prechorus',
-        'chorus',
-        'bridge',
-        'outro',
-        'hook',
-        'refrain',
-        'coda',
-        'solo',
-        'interlude',
-        'ending',
-        'breakdown',
-        'tag'
-      ];
-      return text.split(/\r?\n/).map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return line;
-        const match = trimmed.match(/^[\*\s\-_=~`]*[\(\[\{]?\s*([^\]\)\}]+?)\s*[\)\]\}]?[\*\s\-_=~`]*:?$/);
-        if (match) {
-          const label = match[1].trim();
-          const normalized = label.toLowerCase().replace(/[^a-z]/g, '');
-          if (sectionKeywords.some(k => normalized.startsWith(k))) {
-            const formatted = label
-              .replace(/\s+/g, ' ')
-              .replace(/(^|\s)\S/g, c => c.toUpperCase());
-            return `[${formatted}]`;
-          }
-        }
-        return line;
-      }).join('\n');
-    },
+// ==== TOASTS ====
+function showToast(message, type = 'success', timeout = 2500) {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type} show`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(0)';
+  });
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(100%)';
+    setTimeout(() => toast.remove(), 300);
+  }, timeout);
+}
 
-    stripTitleFromLyrics(title = '', text = '') {
-      const t = String(title || '').trim().replace(/\s+/g, '');
-      if (!t) return String(text || '');
-      return String(text || '')
-        .replace(/\r\n?/g, '\n')
-        .split('\n')
-        .filter(line => {
-          const trimmed = (line || '').trim();
-          // Keep section labels intact
-          if (/^\s*\[[^\n\]]+\]\s*$/.test(trimmed)) return true;
-          const norm = trimmed.replace(/\s+/g, '').toLowerCase();
-          return norm !== t.toLowerCase();
-        })
-        .join('\n');
-    },
+function confirmDialog(message, onYes, onNo) {
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div class="modal-content">
+      <h2>Confirm</h2>
+      <p>${message}</p>
+      <div class="modal-actions">
+        <button class="btn" id="confirm-yes">Yes</button>
+        <button class="btn" id="confirm-no">No</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#confirm-yes').onclick = () => { modal.remove(); onYes && onYes(); };
+  modal.querySelector('#confirm-no').onclick = () => { modal.remove(); onNo && onNo(); };
+}
 
-    normalizeSectionSpacing(lyricsText = '', chordsText = '') {
-      const isLabel = (line = '') => /^\s*\[[^\n\]]+\]\s*$/.test(line || '');
-      const lyricsIn = String(lyricsText || '').replace(/\r\n?/g, '\n').split('\n');
-      const chordsIn = String(chordsText || '').replace(/\r\n?/g, '\n').split('\n');
+const SetlistsManager = (() => {
+    let setlists = new Map();
 
-      const outLyrics = [];
-      const outChords = [];
-      let chordIdx = 0;
-
-      // Ensure first non-empty is a section label; if not, insert a default one
-      const firstNonEmpty = lyricsIn.find(l => (l || '').trim() !== '') || '';
-      if (!isLabel(firstNonEmpty)) {
-        outLyrics.push('[Verse 1]');
-        outChords.push('');
-      }
-
-      for (let i = 0; i < lyricsIn.length; i++) {
-        const raw = lyricsIn[i] ?? '';
-        const trimmed = raw.trim();
-        if (isLabel(trimmed)) {
-          // Ensure a single blank line before each section label (except at very start)
-          if (outLyrics.length > 0) {
-            const last = outLyrics[outLyrics.length - 1] ?? '';
-            if (last.trim() !== '') {
-              outLyrics.push('');
-              outChords.push('');
-            }
-          }
-          outLyrics.push(trimmed);
-          outChords.push('');
-          continue;
-        }
-        if (trimmed === '') {
-          // Drop blank lyric lines inside sections; still consume corresponding chord line
-          if (lyricsIn[i] !== undefined) {
-            // consume a chord entry if present for this lyric line
-            if (chordIdx < chordsIn.length) chordIdx++;
-          }
-          continue;
-        }
-        // Regular lyric line
-        outLyrics.push(raw);
-        outChords.push(chordsIn[chordIdx] ?? '');
-        chordIdx++;
-      }
-
-      // Trim trailing blanks
-      while (outLyrics.length && outLyrics[outLyrics.length - 1].trim() === '') {
-        outLyrics.pop();
-        outChords.pop();
-      }
-
-      return { lyrics: outLyrics.join('\n'), chords: outChords.join('\n') };
-    },
-
-    cleanAIOutput(text) {
-      return text
-        .replace(/\r\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/[ \t]+$/gm, '')
-        .replace(/^\s+|\s+$/g, '')
-        .replace(/^(Verse|Chorus|Bridge|Outro)[^\n]*$/gmi, '[$1]')
-        .replace(/^#+\s*/gm, '')
-        .replace(/```[\s\S]*?```/g, '')
-        .replace(/^(Capo|Key|Tempo|Time Signature).*$/gmi, '')
-        .trim();
-    },
-
-    enforceAlternating(lines) {
-      const chords = [];
-      const lyrics = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (i % 2 === 0) {
-          chords.push(lines[i] || '');
-        } else {
-          lyrics.push(lines[i] || '');
-        }
-      }
-      return { chords, lyrics };
-    },
-
-    parseSongContent(content) {
-      const cleaned = this.cleanAIOutput(content || '');
-      const lines = cleaned.split(/\r?\n/);
-      let lyricsText = cleaned;
-      let chordsText = '';
-      if (lines.length > 1) {
-        const { chords, lyrics } = this.enforceAlternating(lines);
-        if (chords.some(line => line.trim() !== '')) {
-          chordsText = chords.join('\n');
-          lyricsText = lyrics.join('\n');
-        }
-      }
-      lyricsText = this.normalizeSectionLabels(lyricsText);
-      return { lyrics: lyricsText, chords: chordsText };
-    },
-
-    formatTimeAgo(dateString) {
-      const date = new Date(dateString);
-      const now = new Date();
-      const diffMs = now - date;
-      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      
-      if (diffDays === 0) return 'Today';
-      if (diffDays === 1) return 'Yesterday';
-      if (diffDays < 7) return `${diffDays} days ago`;
-      if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-      return date.toLocaleDateString();
-    },
-
-    highlightMatch(text, query) {
-      if (!query) return text;
-      const terms = query
-        .split(/\s+/)
-        .filter(Boolean)
-        .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-      if (!terms.length) return text;
-      const regex = new RegExp(`(${terms.join('|')})`, 'ig');
-      return text.replace(regex, match => `<strong>${match}</strong>`);
-    },
-
-    renderSongs(searchQuery = "") {
-      this.songList.innerHTML = '';
-
-      let filtered = this.songs;
-      if (searchQuery && searchQuery.trim()) {
-        const terms = searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
-        filtered = this.songs.filter(song => {
-          const title = song.title.toLowerCase();
-          const tags = (song.tags || []).map(t => t.toLowerCase());
-          const key = song.key?.toLowerCase() || '';
-          return terms.every(term =>
-            title.includes(term) ||
-            tags.some(tag => tag.includes(term)) ||
-            key.includes(term)
-          );
-        });
-      }
-
-      filtered.sort((a, b) => {
-        switch (this.sortOrder) {
-          case 'titleDesc':
-            return b.title.localeCompare(a.title);
-          case 'recent':
-            return new Date(b.lastEditedAt) - new Date(a.lastEditedAt);
-          default:
-            return a.title.localeCompare(b.title);
-        }
-      });
-
-      if (filtered.length === 0) {
-        this.songList.innerHTML = `<p class="empty-state">No songs found.</p>`;
-        return;
-      }
-
-      for (const song of filtered) {
-        const item = document.createElement('div');
-        item.className = 'song-item';
-        item.dataset.id = song.id;
-        
-        // Build metadata display
-        const metadata = [];
-        if (song.key) metadata.push(escapeHtml(song.key));
-        if (song.tempo && song.tempo !== 120) metadata.push(`${song.tempo} BPM`);
-        if (song.timeSignature && song.timeSignature !== '4/4') metadata.push(escapeHtml(song.timeSignature));
-        
-        const lastEdited = this.formatTimeAgo(song.lastEditedAt);
-
-        const safeTitleHtml = this.highlightMatch(escapeHtml(song.title), searchQuery);
-        const safeTitleAttr = escapeHtml(song.title);
-        item.innerHTML = `
-          <div class="song-info">
-            <span class="song-title">${safeTitleHtml}</span>
-            ${metadata.length > 0 ? `<div class="song-metadata">${metadata.join(' • ')}</div>` : ''}
-            <div class="song-details">
-              <span class="song-tags"></span>
-              <span class="song-edited">Last edited: ${lastEdited}</span>
-            </div>
-          </div>
-          <div class="song-actions">
-            <button class="song-copy-btn icon-btn" title="Quick Copy" aria-label="Quick copy ${safeTitleAttr}" data-song-id="${song.id}">
-              <i class="fas fa-copy"></i>
-            </button>
-            <a class="song-edit-btn icon-btn edit-song-btn" href="editor/editor.html?songId=${song.id}" title="Edit" aria-label="Edit ${safeTitleAttr}">
-              <i class="fas fa-pen"></i>
-            </a>
-            <button class="song-delete-btn icon-btn delete-song-btn" title="Delete" aria-label="Delete ${safeTitleAttr}" data-song-id="${song.id}">
-              <i class="fas fa-trash"></i>
-            </button>
-          </div>
-        `;
-
-        // Safely render tags
-        const tagsContainer = item.querySelector('.song-tags');
-        if (tagsContainer && song.tags?.length > 0) {
-          const frag = document.createDocumentFragment();
-          song.tags.forEach(tag => {
-            const span = document.createElement('span');
-            span.className = 'song-tag';
-            span.innerHTML = this.highlightMatch(escapeHtml(tag), searchQuery);
-            frag.appendChild(span);
-            const comma = document.createTextNode(', ');
-            frag.appendChild(comma);
-          });
-          if (frag.lastChild) frag.removeChild(frag.lastChild);
-          tagsContainer.appendChild(frag);
-        }
-
-        // Add event listeners
-        const copyBtn = item.querySelector('.song-copy-btn');
-        copyBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          this.quickCopySong(song);
-        });
-
-        const deleteBtn = item.querySelector('.song-delete-btn');
-        deleteBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (confirm(`Delete "${song.title}"?`)) {
-            this.songs = this.songs.filter(s => s.id !== song.id);
-            this.saveSongs();
-            this.renderSongs(searchQuery);
-            ClipboardManager.showToast('Song deleted', 'info');
-          }
-        });
-
-        // Explicitly handle edit link navigation to avoid any
-        // interference from other click handlers or mobile quirks
-        const editLink = item.querySelector('.song-edit-btn');
-        if (editLink) {
-          editLink.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            try { sessionStorage.setItem('lastSongId', String(song.id)); } catch {}
-            window.location.href = `editor/editor.html?songId=${song.id}`;
-          });
-        }
-
-        item.querySelectorAll('.song-tag').forEach(tagEl => {
-          tagEl.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const tag = tagEl.textContent;
-            const input = document.getElementById('song-search-input');
-            if (input) input.value = tag;
-            this.renderSongs(tag);
-          });
-        });
-
-        item.addEventListener('click', (e) => {
-          if (!e.target.closest('.song-actions')) {
-            try { sessionStorage.setItem('lastSongId', String(song.id)); } catch {}
-            window.location.href = `editor/editor.html?songId=${song.id}`;
-          }
-      });
-
-      this.songList.appendChild(item);
-    }
-  },
-
-    initDragSort() {
-      if (!this.songList || typeof Sortable === 'undefined') return;
-      Sortable.create(this.songList, {
-        handle: '.drag-handle',
-        animation: 150,
-        ghostClass: 'drag-ghost',
-        onEnd: () => {
-          const order = Array.from(this.songList.children).map(child => child.dataset.id);
-          const map = new Map(this.songs.map(s => [s.id, s]));
-          this.songs = order.map(id => map.get(id)).filter(Boolean);
-          this.saveSongs();
-        }
-      });
-    },
-
-    async quickCopySong(song) {
-      const title = String(song.title || 'Untitled').trim();
-      const stripDuplicateTitle = (t, text) => {
-        const ttl = String(t || '').trim().replace(/\s+/g, ' ');
-        const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-        let i = 0;
-        while (i < lines.length && lines[i].trim() === '') i++;
-        if (i < lines.length) {
-          const first = lines[i].trim().replace(/\s+/g, ' ');
-          if (first.toLowerCase() === ttl.toLowerCase()) {
-            lines.splice(i, 1);
-            if (i < lines.length && lines[i].trim() === '') lines.splice(i, 1);
-          }
-        }
-        return lines.join('\n');
-      };
-
-      const normalizedLyrics = String(song.lyrics || '').replace(/\r\n?/g, '\n');
-      let body = stripDuplicateTitle(title, normalizedLyrics);
-      if (song.chords && String(song.chords).trim()) {
-        const chords = String(song.chords || '').replace(/\r\n?/g, '\n');
-        body = ClipboardManager.formatLyricsWithChords(body, chords);
-      }
-      const textToCopy = `${title}\n\n${body}`;
-      await ClipboardManager.copyToClipboard(textToCopy);
-    },
-
-    renderToolbar() {
-      const toolbar = document.getElementById('tab-toolbar');
-      if (this.currentTab === 'songs') {
-        toolbar.innerHTML = `
-          <div class="search-with-voice">
-            <input type="text" id="song-search-input" class="search-input" placeholder="Search by title, tag, or key...">
-            <button id="voice-search-btn" class="btn icon-btn" title="Voice Search" aria-label="Voice search"><i class="fas fa-microphone"></i></button>
-          </div>
-          <div class="toolbar-buttons-group">
-            <select id="song-sort-select" class="sort-select">
-              <option value="titleAsc">Title A–Z</option>
-              <option value="titleDesc">Title Z–A</option>
-              <option value="recent">Recently Edited</option>
-            </select>
-            <button id="add-song-btn" class="btn icon-btn" title="Add Song"><i class="fas fa-plus"></i></button>
-            <button id="export-library-btn" class="btn icon-btn" title="Export Library"><i class="fas fa-download"></i></button>
-            <button id="normalize-library-btn" class="btn icon-btn" title="Normalize Library"><i class="fas fa-broom"></i></button>
-            <button id="import-clipboard-btn" class="btn icon-btn" title="Paste Song"><i class="fas fa-paste"></i></button>
-            <button id="delete-all-songs-btn" class="btn icon-btn danger" title="Delete All Songs"><i class="fas fa-trash"></i></button>
-            <label for="song-upload-input" class="btn icon-btn" title="Upload Files"><i class="fas fa-upload"></i></label>
-          </div>
-          <input type="file" id="song-upload-input" multiple accept=".txt,.docx,.json" class="hidden-file">
-        `;
-      } else if (this.currentTab === 'setlists') {
-        toolbar.innerHTML = `
-          <select id="setlist-select" class="setlist-select"></select>
-          <div class="toolbar-buttons-group">
-            <button id="new-setlist-btn" class="btn icon-btn" title="New Setlist"><i class="fas fa-plus"></i></button>
-            <button id="rename-setlist-btn" class="btn icon-btn" title="Rename"><i class="fas fa-pen"></i></button>
-            <button id="delete-setlist-btn" class="btn icon-btn danger" title="Delete"><i class="fas fa-trash"></i></button>
-            <button id="import-setlist-btn" class="btn icon-btn" title="Import Setlist (TXT/DOCX)"><i class="fas fa-file-import"></i></button>
-            <button id="import-setlist-image-btn" class="btn icon-btn" title="Import from Image (OCR)"><i class="fas fa-image"></i></button>
-            <button id="export-setlist-btn" class="btn icon-btn" title="Export"><i class="fas fa-file-export"></i></button>
-          </div>
-          <input type="file" id="import-setlist-file" accept=".txt,.docx" class="hidden-file">
-          <input type="file" id="import-setlist-image" accept="image/*" class="hidden-file">
-        `;
-      } else {
-        // performance
-        toolbar.innerHTML = `
-          <select id="performance-setlist-select" class="setlist-select"></select>
-          <input type="text" id="performance-song-search" class="search-input" placeholder="Find any song...">
-          <div class="toolbar-buttons-group">
-            <button id="start-performance-btn" class="btn icon-btn primary"><i class="fas fa-play"></i></button>
-            <button id="resume-performance-btn" class="btn icon-btn" title="Resume last"><i class="fas fa-redo"></i></button>
-          </div>
-        `;
-      }
-
-      if (this.currentTab === 'songs') {
-        document.getElementById('song-sort-select').value = this.sortOrder;
-        document.getElementById('song-sort-select')?.addEventListener('change', (e) => {
-          this.sortOrder = e.target.value;
-          localStorage.setItem('songSortOrder', this.sortOrder);
-          const query = document.getElementById('song-search-input')?.value || '';
-          this.renderSongs(query);
-          const labels = { titleAsc: 'Title A–Z', titleDesc: 'Title Z–A', recent: 'Recently Edited' };
-          ClipboardManager.showToast(`Sort: ${labels[this.sortOrder] || this.sortOrder}`, 'info');
-        });
-
-        document.getElementById('add-song-btn')?.addEventListener('click', () => this.createNewSong());
-        document.getElementById('export-library-btn')?.addEventListener('click', () => this.openExportModal?.());
-        document.getElementById('normalize-library-btn')?.addEventListener('click', async (e) => {
-          const btn = e.currentTarget;
-          btn.classList.add('loading');
-          try { await Promise.resolve(this.normalizeLibrary()); }
-          finally { btn.classList.remove('loading'); }
-        });
-        document.getElementById('import-clipboard-btn')?.addEventListener('click', async (e) => {
-          const btn = e.currentTarget;
-          btn.classList.add('loading');
-          try {
-            const text = await navigator.clipboard.readText();
-            if (text.trim()) {
-              const title = prompt("Title for pasted song?", "New Song");
-              if (title) {
-                const { lyrics, chords } = splitLyricsAndChordsFromText(text);
-                const newSong = this.createSong(title, lyrics, chords);
-                this.songs.push(newSong);
-                this.saveSongs();
-                this.renderSongs();
-                ClipboardManager.showToast('Song pasted from clipboard', 'success');
-              }
-            } else {
-              ClipboardManager.showToast('Clipboard is empty', 'info');
-            }
-          } catch (err) {
-            console.error('Clipboard read failed', err);
-            ClipboardManager.showToast('Clipboard not accessible', 'error');
-          } finally {
-            btn.classList.remove('loading');
-          }
-        });
-        document.getElementById('delete-all-songs-btn')?.addEventListener('click', () => this.confirmDeleteAll());
-        document.getElementById('song-search-input')?.addEventListener('input', (e) => {
-          const query = e.target.value;
-          this.renderSongs(query);
-        });
-
-      // Voice search setup
-        const voiceBtn = document.getElementById('voice-search-btn');
-        const inputEl = document.getElementById('song-search-input');
-        voiceBtn?.addEventListener('click', () => {
-          const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-          if (!SR) { ClipboardManager.showToast('Voice input not supported on this browser', 'error'); return; }
-          try {
-            const rec = new SR();
-            rec.lang = (navigator.language || 'en-US');
-            rec.interimResults = true;
-            rec.continuous = false;
-            voiceBtn.classList.add('mic-listening');
-            ClipboardManager.showToast('Listening… Speak your search', 'info', 1500);
-            let finalText = inputEl?.value || '';
-            rec.onresult = (event) => {
-              let interim = '';
-              for (let i = event.resultIndex; i < event.results.length; i++) {
-                const tr = event.results[i][0].transcript;
-                if (event.results[i].isFinal) { finalText = (finalText ? finalText + ' ' : '') + tr; }
-                else { interim += tr; }
-              }
-              if (inputEl) {
-                inputEl.value = (finalText + ' ' + interim).trim();
-                this.renderSongs(inputEl.value);
-              }
-            };
-            rec.onerror = (e) => { ClipboardManager.showToast(`Voice error: ${e.error || e.message}`, 'error'); };
-            rec.onend = () => { voiceBtn.classList.remove('mic-listening'); };
-            rec.start();
-          } catch (err) {
-            voiceBtn.classList.remove('mic-listening');
-            ClipboardManager.showToast('Could not start voice input', 'error');
-          }
-        });
-
-        document.getElementById('song-upload-input')?.addEventListener('change', async (e) => {
-          const files = Array.from(e.target.files);
-          if (!files.length) return;
-
-        // Check if it's a JSON library import
-        const jsonFiles = files.filter(f => f.name.endsWith('.json'));
-        if (jsonFiles.length > 0) {
-          await this.importLibrary(jsonFiles[0]);
-          e.target.value = "";
-          return;
-        }
-
-        const processFile = (file) => {
-          return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-              let content = e.target.result;
-
-              if (file.name.endsWith('.docx')) {
-                try {
-                  const result = await mammoth.extractRawText({ arrayBuffer: e.target.result });
-                  content = result.value;
-                } catch (err) {
-                  console.error('Error processing DOCX:', err);
-                  return resolve(null);
+    async function load() {
+        try {
+            const arr = await DB.getAllSetlists();
+            const repaired = [];
+            for (const obj of (arr || [])) {
+                const fixed = { ...obj };
+                // Repair missing or malformed fields from older local data
+                if (!fixed || typeof fixed !== 'object') continue;
+                if (!fixed.id) {
+                    fixed.id = (Date.now().toString() + Math.random().toString(16).slice(2));
+                    fixed.updatedAt = Date.now();
+                    try { await DB.putSetlist(fixed); } catch {}
                 }
-              }
+                if (!Array.isArray(fixed.songs)) fixed.songs = [];
+                repaired.push(fixed);
+            }
+            setlists = new Map(repaired.map(obj => [obj.id, obj]));
+        } catch (error) {
+            console.error('Failed loading setlists from DB', error);
+            setlists = new Map();
+        }
+    }
 
-              // Extract title from filename (without extension)
-              const title = this.normalizeTitle(file.name);
-              const parsed = splitLyricsAndChordsFromText(String(content || '').trim());
+    function save() { /* no-op; per-change writes to DB */ }
 
-              if (title && (parsed.lyrics?.trim()?.length || parsed.chords?.trim()?.length)) {
-                resolve(this.createSong(title, parsed.lyrics, parsed.chords));
-              } else {
-                resolve(null);
-              }
+    function getAllSetlists() {
+        return Array.from(setlists.values()).sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function getSetlistById(id) {
+        return setlists.get(id) || null;
+    }
+
+    function addSetlist(name, songIds = []) {
+        const normalized = normalizeSetlistName(name);
+        const existing = Array.from(setlists.values()).find(s => 
+            s.name.toLowerCase() === normalized.toLowerCase()
+        );
+        let finalName = normalized;
+        if (existing) {
+            let counter = 1;
+            while (Array.from(setlists.values()).find(s => 
+                s.name.toLowerCase() === `${normalized} (${counter})`.toLowerCase()
+            )) { counter++; }
+            finalName = `${normalized} (${counter})`;
+        }
+        const setlist = {
+            id: (Date.now().toString() + Math.random().toString(16).slice(2)), 
+            name: finalName,
+            songs: [...songIds],
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+        };
+        setlists.set(setlist.id, setlist);
+        DB.putSetlist(setlist);
+        return setlist;
+    }
+
+    function renameSetlist(id, newName) {
+        const setlist = setlists.get(id);
+        if (setlist) {
+            const normalized = normalizeSetlistName(newName);
+            const existing = Array.from(setlists.values()).find(s => 
+                s.id !== id && s.name.toLowerCase() === normalized.toLowerCase()
+            );
+            if (existing) throw new Error(`A setlist named "${normalized}" already exists`);
+            setlist.name = newName.trim();
+            setlist.updatedAt = Date.now();
+            DB.putSetlist(setlist);
+            return setlist;
+        }
+        return null;
+    }
+
+    function duplicateSetlist(id) {
+        const orig = getSetlistById(id);
+        if (orig) return addSetlist(orig.name + ' Copy', orig.songs);
+        return null;
+    }
+
+    function deleteSetlist(id) {
+        const deleted = setlists.delete(id);
+        if (deleted) DB.deleteSetlist(id);
+        return deleted;
+    }
+
+    function updateSetlistSongs(id, songIds) {
+        const setlist = setlists.get(id);
+        if (setlist) {
+            setlist.songs = [...songIds];
+            setlist.updatedAt = Date.now();
+            DB.putSetlist(setlist);
+            return setlist;
+        }
+        return null;
+    }
+
+    function addSongToSetlist(setlistId, songId) {
+        const setlist = setlists.get(setlistId);
+        if (setlist && !setlist.songs.includes(songId)) {
+            setlist.songs.push(songId);
+            setlist.updatedAt = Date.now();
+            DB.putSetlist(setlist);
+            return setlist;
+        }
+        return null;
+    }
+
+    function removeSongFromSetlist(setlistId, songId) {
+        const setlist = setlists.get(setlistId);
+        if (setlist) {
+            const index = setlist.songs.indexOf(songId);
+            if (index > -1) {
+                setlist.songs.splice(index, 1);
+                setlist.updatedAt = Date.now();
+                DB.putSetlist(setlist);
+                return setlist;
+            }
+        }
+        return null;
+    }
+
+    function moveSongInSetlist(setlistId, songId, direction) {
+        const setlist = setlists.get(setlistId);
+        if (!setlist) return null;
+        const currentIndex = setlist.songs.indexOf(songId);
+        if (currentIndex === -1) return null;
+        const newIndex = currentIndex + direction;
+        if (newIndex < 0 || newIndex >= setlist.songs.length) return null;
+        [setlist.songs[currentIndex], setlist.songs[newIndex]] = 
+        [setlist.songs[newIndex], setlist.songs[currentIndex]];
+        setlist.updatedAt = Date.now();
+        DB.putSetlist(setlist);
+        return setlist;
+    }
+
+   function importSetlistFromText(name, text, allSongs) {
+    // Normalize and trim setlist name
+    const normalizedName = String(name||'').trim();
+    if (!normalizedName) { showToast('Setlist name cannot be empty.', 'error'); return null; }
+
+    // Helpers for OCR cleanup and normalization
+    const cleanLine = (s) => String(s||'')
+      .replace(/[\u2018\u2019\u201A\u2032\u00B4]/g, "'")
+      .replace(/[\u201C\u201D\u2033]/g, '"')
+      .replace(/[\u2013\u2014\u2212]/g, '-')
+      .replace(/[\u2022\u2023\u25E6\u2043\u2219\u00B7]/g, '') // bullets/middots
+      .replace(/^\s*[•*\-–—]\s*/, '') // leading bullets/dashes
+      .replace(/^\s*\d+[\).\:\-]?\s*/, '') // leading numbering
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const normalize = (s) => cleanLine(s)
+      .normalize('NFD')
+      .replace(/\p{Diacritic}+/gu, '')
+      .toLowerCase()
+      .replace(/[“”‘’]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\b0\b/g, 'o')
+      .replace(/\b1\b/g, 'l')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    const isChordToken = (tok) => /^[A-G](#|b)?(maj|min|m|sus|add|dim|aug)?\d*(\/[A-G](#|b)?)?$/.test(tok);
+    const isChordLine = (line) => {
+      const toks = cleanLine(line).split(/\s+/).filter(Boolean);
+      if (toks.length < 2 || toks.length > 8) return false;
+      const chordCount = toks.filter(isChordToken).length;
+      return chordCount >= Math.max(2, Math.ceil(toks.length * 0.6));
+    };
+    const isProbableTitle = (line) => {
+      const t = cleanLine(line);
+      if (!t) return false;
+      if (t.length < 2 || t.length > 64) return false;
+      const letters = (t.match(/[A-Za-z]/g)||[]).length;
+      const digits = (t.match(/\d/g)||[]).length;
+      const ratio = letters / Math.max(1, t.length);
+      if (ratio < 0.35) return false;
+      if (digits > letters) return false;
+      if (isChordLine(t)) return false;
+      return true;
+    };
+
+    // Build a search index with normalized titles alongside originals (no DB change)
+    const indexed = (allSongs||[]).map(s => ({ item: s, title: s.title || '', _n: normalize(s.title||'') }));
+    const fuse = new Fuse(indexed, {
+        keys: [
+          { name: 'title', weight: 0.65 },
+          { name: '_n', weight: 0.35 }
+        ],
+        threshold: 0.45,
+        includeScore: true,
+        ignoreLocation: true,
+        minMatchCharLength: 2,
+        shouldSort: true,
+    });
+
+    // Split text into lines, filter likely titles, dedupe
+    let lines = String(text||'').split(/\r?\n/)
+      .map(cleanLine)
+      .filter(Boolean)
+      .filter(isProbableTitle);
+    // Dedupe nearby duplicates
+    const seen = new Set();
+    lines = lines.filter(l => { const k = normalize(l); if (seen.has(k)) return false; seen.add(k); return true; });
+
+    const songIds = [];
+    const notFound = [];
+
+    const tryMatch = (q) => {
+      const results = fuse.search(q);
+      if (!results.length) return null;
+      const best = results[0];
+      // Accept if reasonably close; calibrate using score and length
+      if (best.score <= 0.5) return best.item.item.id;
+      return null;
+    };
+
+    for (const line of lines) {
+      // Try original, then normalized, then with common OCR digit->letter swaps
+      const variants = [line, normalize(line), normalize(line).replace(/0/g,'o').replace(/1/g,'l').replace(/5/g,'s')];
+      let matchedId = null;
+      for (const v of variants) { matchedId = tryMatch(v); if (matchedId) break; }
+      if (matchedId) songIds.push(matchedId); else notFound.push(line);
+    }
+
+    if (songIds.length === 0) { showToast('No matching songs found to import.', 'info'); return null; }
+
+    // Add setlist with fuzzy matched songs
+    let setlist;
+    try {
+        setlist = SetlistsManager.addSetlist(normalizedName, songIds);
+    } catch (err) { showToast(err.message || 'Failed to create setlist.', 'error'); return null; }
+
+    // Notify user of any missing songs
+    if (notFound.length > 0) { showToast(`${notFound.length} titles not found.`, 'info', 3500); }
+
+    return { setlist, imported: songIds.length, notFound };
+}
+
+
+    function exportSetlist(setlistId, allSongs, format = 'json') {
+        const setlist = getSetlistById(setlistId);
+        if (!setlist) return null;
+        const songs = setlist.songs
+            .map(songId => allSongs.find(s => s.id === songId))
+            .filter(song => song !== undefined);
+        switch (format) {
+            case 'json':
+                return JSON.stringify({ setlist, songs }, null, 2);
+            case 'txt':
+                return songs.map(song => song.title).join('\n');
+            case 'csv':
+                const header = 'Title,Lyrics\n';
+                const rows = songs.map(song => 
+                    `"${song.title.replace(/"/g, '""')}","${song.lyrics.replace(/"/g, '""')}"`
+                ).join('\n');
+                return header + rows;
+            default:
+                return null;
+        }
+    }
+
+    // initial load triggered by app.init()
+
+    return {
+        getAllSetlists,
+        getSetlistById,
+        addSetlist,
+        renameSetlist,
+        duplicateSetlist,
+        deleteSetlist,
+        updateSetlistSongs,
+        addSongToSetlist,
+        removeSongFromSetlist,
+        moveSongInSetlist,
+        importSetlistFromText,
+        exportSetlist,
+        load,
+        save,
+    };
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+    async function migrateIfNeeded() {
+        try {
+            const migrated = await DB.getMeta('migrated');
+            if (migrated === true) return;
+            const songsRaw = localStorage.getItem('songs');
+            const setlistsRaw = localStorage.getItem('setlists');
+            const songs = songsRaw ? JSON.parse(songsRaw) : [];
+            const setlists = setlistsRaw ? JSON.parse(setlistsRaw) : [];
+            if (songs && songs.length) {
+                await DB.putSongs(songs);
+            }
+            if (setlists && setlists.length) {
+                for (const s of setlists) await DB.putSetlist(s);
+            }
+            localStorage.removeItem('songs');
+            localStorage.removeItem('setlists');
+            await DB.setMeta('migrated', true);
+        } catch (e) {
+            console.error('Migration failed', e);
+        }
+    }
+  const app = {
+        normalizeTitle(title) {
+            let t = title.replace(/\.[^/.]+$/, '');
+            t = t.replace(/[_\-]+/g, ' ');
+            t = t.replace(/\s+/g, ' ').trim();
+            t = t.replace(/([a-z])([A-Z])/g, '$1 $2');
+            t = t.replace(/\w\S*/g, (w) =>
+                w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+            );
+            return t;
+        },
+
+        isDuplicateTitle(title) {
+            const normalized = title.trim().toLowerCase();
+            return this.songs.some(song => song.title.trim().toLowerCase() === normalized);
+        },
+
+        // DOM Elements
+        navButtons: document.querySelectorAll('.nav-button'),
+        tabs: document.querySelectorAll('.tab'),
+        songList: document.getElementById('song-list'),
+        addSongBtn: document.getElementById('add-song-btn'),
+        deleteAllSongsBtn: document.getElementById('delete-all-songs-btn'),
+        songModal: document.getElementById('song-modal'),
+        songModalTitle: document.getElementById('song-modal-title'),
+        saveSongBtn: document.getElementById('save-song-btn'),
+        cancelSongBtn: document.getElementById('cancel-song-btn'),
+        songTitleInput: document.getElementById('song-title-input'),
+        songLyricsInput: document.getElementById('song-lyrics-input'),
+        songSearchInput: document.getElementById('song-search-input'),
+        songUploadInput: document.getElementById('song-upload-input'),
+        setlistSelect: document.getElementById('setlist-select'),
+        newSetlistBtn: document.getElementById('new-setlist-btn'),
+        renameSetlistBtn: document.getElementById('rename-setlist-btn'),
+        duplicateSetlistBtn: document.getElementById('duplicate-setlist-btn'),
+        deleteSetlistBtn: document.getElementById('delete-setlist-btn'),
+        availableSongsContainer: document.getElementById('available-songs'),
+        currentSetlistSongsContainer: document.getElementById('current-setlist-songs'),
+        currentSetlistTitle: document.getElementById('current-setlist-title'),
+        setlistModal: document.getElementById('setlist-modal'),
+        setlistModalTitle: document.getElementById('setlist-modal-title'),
+        setlistNameInput: document.getElementById('setlist-name-input'),
+        saveSetlistBtn: document.getElementById('save-setlist-btn'),
+        cancelSetlistBtn: document.getElementById('cancel-setlist-btn'),
+        performanceSetlistSelect: document.getElementById('performance-setlist-select'),
+        performanceSongSearch: document.getElementById('performance-song-search'),
+        startPerformanceBtn: document.getElementById('start-performance-btn'),
+        performanceSongList: document.getElementById('performance-song-list'),
+
+        // Tab Toolbars
+        tabToolbars: {
+            songs: `
+                <input type="text" id="song-search-input" class="search-input" placeholder="Search songs...">
+                <button id="song-voice-btn" class="icon-btn" title="Voice search"><i class="fas fa-microphone"></i></button>
+                <div class="toolbar-buttons-group">
+                    <label for="song-upload-input" class="btn" title="Upload"><i class="fas fa-upload"></i></label>
+                    <button id="delete-all-songs-btn" class="btn danger" title="Delete All"><i class="fas fa-trash"></i></button>
+                    <button id="add-song-btn" class="btn" title="Add Song"><i class="fas fa-plus"></i></button>
+                </div>
+                <input type="file" id="song-upload-input" multiple accept=".txt,.docx" class="hidden-file">
+            `,
+            setlists: `
+                <select id="setlist-select" class="setlist-select"></select>
+                <div class="toolbar-buttons-group">
+                    <button id="new-setlist-btn" class="btn" title="New Setlist"><i class="fas fa-plus"></i></button>
+                    <button id="rename-setlist-btn" class="btn" title="Rename"><i class="fas fa-pen"></i></button>
+                    <button id="duplicate-setlist-btn" class="btn" title="Duplicate"><i class="fas fa-copy"></i></button>
+                    <button id="delete-setlist-btn" class="btn danger" title="Delete"><i class="fas fa-trash"></i></button>
+                    <button id="import-setlist-btn" class="btn" title="Import"><i class="fas fa-file-import"></i></button>
+                    <button id="import-setlist-image-btn" class="btn" title="Import from Image (OCR)"><i class="fas fa-image"></i></button>
+                    <button id="export-setlist-btn" class="btn" title="Export"><i class="fas fa-file-export"></i></button>
+                </div>
+                <input type="file" id="import-setlist-file" accept=".txt,.docx" class="hidden-file">
+                <input type="file" id="import-setlist-image" accept="image/*" class="hidden-file">
+            `,
+            performance: `
+                <select id="performance-setlist-select" class="setlist-select"></select>
+                <input type="text" id="performance-song-search" class="search-input" placeholder="Find any song...">
+                <button id="performance-voice-btn" class="icon-btn" title="Voice search"><i class="fas fa-microphone"></i></button>
+                <button id="start-performance-btn" class="btn primary"><i class="fas fa-play"></i> Start</button>
+            `
+        },
+
+        // State
+        songs: [],
+        currentSongId: null,
+        currentSetlistId: null,
+        performanceSetlistId: null,
+        activeRecognition: null,
+        modalMode: null,
+        sortableSetlist: null,
+        lastPerformance: null,
+
+        // Render the toolbar for the given tab and attach event listeners
+        renderToolbar(tab) {
+            const toolbarDiv = document.getElementById('tab-toolbar');
+            if (!toolbarDiv) {
+                console.error('Tab toolbar element not found');
+                return;
+            }
+            // Stop any active speech recognition when switching toolbars
+            if (this.activeRecognition && typeof this.activeRecognition.stop === 'function') {
+                try { this.activeRecognition.stop(); } catch {}
+                this.activeRecognition = null;
+            }
+            toolbarDiv.innerHTML = this.tabToolbars[tab] || '';
+            
+            if (tab === 'setlists' || tab === 'performance') {
+                this.setlistSelect = document.getElementById('setlist-select');
+                this.performanceSetlistSelect = document.getElementById('performance-setlist-select');
+            }
+
+            if (tab === 'songs') {
+                this.songSearchInput = document.getElementById('song-search-input');
+                this.addSongBtn = document.getElementById('add-song-btn');
+                this.deleteAllSongsBtn = document.getElementById('delete-all-songs-btn');
+                this.songUploadInput = document.getElementById('song-upload-input');
+
+                this.songSearchInput.addEventListener('input', () => this.renderSongs());
+                const songVoiceBtn = document.getElementById('song-voice-btn');
+                this.setupSpeechToText(this.songSearchInput, songVoiceBtn, () => this.renderSongs());
+                this.addSongBtn.addEventListener('click', () => this.openSongModal());
+                this.deleteAllSongsBtn.addEventListener('click', () => {
+                    confirmDialog('Delete ALL songs? This cannot be undone!', async () => {
+                        this.songs = [];
+                        try { await DB.clearSongs(); } catch {}
+                        await this.saveData();
+                        this.renderSongs();
+                        showToast('Deleted all songs.', 'success');
+                    });
+                });
+                this.songUploadInput.addEventListener('change', (e) => this.handleFileUpload(e));
+            } else if (tab === 'setlists') {
+                this.setlistSelect = document.getElementById('setlist-select');
+                this.newSetlistBtn = document.getElementById('new-setlist-btn');
+                this.renameSetlistBtn = document.getElementById('rename-setlist-btn');
+                this.duplicateSetlistBtn = document.getElementById('duplicate-setlist-btn');
+                this.deleteSetlistBtn = document.getElementById('delete-setlist-btn');
+                this.setlistSelect.addEventListener('change', (e) => this.handleSetlistSelectChange(e));
+                this.newSetlistBtn.addEventListener('click', () => this.openSetlistModal());
+                this.renameSetlistBtn.addEventListener('click', () => this.openSetlistModal('rename'));
+                this.duplicateSetlistBtn.addEventListener('click', () => this.handleDuplicateSetlist());
+                this.deleteSetlistBtn.addEventListener('click', () => this.handleDeleteSetlist());
+                document.getElementById('import-setlist-btn').addEventListener('click', () => {
+                    const m = document.getElementById('import-modal');
+                    if (m) m.style.display = 'flex';
+                });
+                // OCR image import triggers hidden input
+                document.getElementById('import-setlist-image-btn')?.addEventListener('click', () => {
+                    document.getElementById('import-setlist-image')?.click();
+                });
+                document.getElementById('import-setlist-image')?.addEventListener('change', (e) => this.handleImportSetlistImage(e));
+                document.getElementById('export-setlist-btn').addEventListener('click', () => {
+                    const m = document.getElementById('export-modal');
+                    if (m) m.style.display = 'flex';
+                    this.updateExportFormatOptions();
+                });
+            } else if (tab === 'performance') {
+                this.performanceSetlistSelect = document.getElementById('performance-setlist-select');
+                this.performanceSongSearch = document.getElementById('performance-song-search');
+                this.startPerformanceBtn = document.getElementById('start-performance-btn');
+                this.performanceSetlistSelect.addEventListener('change', () => this.handlePerformanceSetlistChange());
+                this.performanceSongSearch.addEventListener('input', () => this.handlePerformanceSongSearch());
+                const perfVoiceBtn = document.getElementById('performance-voice-btn');
+                this.setupSpeechToText(this.performanceSongSearch, perfVoiceBtn, () => this.handlePerformanceSongSearch());
+                this.startPerformanceBtn.addEventListener('click', () => this.handleStartPerformance());
+            }
+        },
+
+        async handleImportSetlistImage(event) {
+            try {
+                const input = event.target;
+                const file = input?.files?.[0];
+                if (!file) return;
+                if (!window.Tesseract || !window.Tesseract.recognize) {
+                    showToast('OCR not available (Tesseract failed to load).', 'error', 3500);
+                    return;
+                }
+                showToast('Running OCR on image…', 'info', 2000);
+                const tessBase = `${window.location.origin}/lib/tesseract`;
+                // Proactively check headers; choose CDN first if local looks mis-served
+                const hdr = await this.checkTesseractLangHeaders(tessBase);
+                let data;
+                // Prefer CDN lang first if local headers look wrong
+                const attemptConfigs = (hdr && hdr.ok) ? [
+                  { workerPath: `${tessBase}/worker.min.js`, corePath: `${tessBase}/tesseract-core-simd.wasm.js`, langPath: `${tessBase}` },
+                  { workerPath: `${tessBase}/worker.min.js`, corePath: `${tessBase}/tesseract-core-simd.wasm.js`, langPath: 'https://tessdata.projectnaptha.com/4.0.0' }
+                ] : [
+                  { workerPath: `${tessBase}/worker.min.js`, corePath: `${tessBase}/tesseract-core-simd.wasm.js`, langPath: 'https://tessdata.projectnaptha.com/4.0.0' },
+                  { workerPath: `${tessBase}/worker.min.js`, corePath: `${tessBase}/tesseract-core-simd.wasm.js`, langPath: `${tessBase}` }
+                ];
+                let lastErr;
+                for (const cfg of attemptConfigs) {
+                  try {
+                    ({ data } = await Tesseract.recognize(file, 'eng', cfg));
+                    lastErr = null;
+                    break;
+                  } catch (e) { lastErr = e; }
+                }
+                if (lastErr) throw lastErr;
+                let text = (data && data.text) ? data.text : '';
+                text = String(text).replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n');
+                if (!text.trim()) { showToast('No text detected in image.', 'info'); return; }
+
+                const suggested = this.normalizeTitle(file.name.replace(/\.[^.]+$/, '')) || 'New Setlist';
+                const name = prompt('Name for this setlist:', suggested);
+                if (!name) { showToast('Import cancelled.', 'info'); return; }
+
+                const result = SetlistsManager.importSetlistFromText(name, text, this.songs);
+                if (!result) return; // Import function shows its own toasts
+                // Switch to new setlist
+                this.currentSetlistId = result.setlist.id;
+                await this.saveData();
+                this.renderSetlists();
+                showToast(`Imported ${result.imported} songs from image.`, 'success');
+            } catch (e) {
+                console.error('OCR import failed', e);
+                showToast('Failed to import from image.', 'error');
+            } finally {
+                // Reset file input for subsequent imports
+                const el = document.getElementById('import-setlist-image');
+                if (el) el.value = '';
+            }
+        },
+
+        // Verify headers for local eng.traineddata.gz to avoid OCR failures
+        async checkTesseractLangHeaders(tessBase) {
+            try {
+                const url = `${tessBase}/eng.traineddata.gz`;
+                const res = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+                if (!res.ok) return { ok: false, reason: 'not-ok' };
+                const enc = (res.headers.get('content-encoding') || '').toLowerCase();
+                const type = (res.headers.get('content-type') || '').toLowerCase();
+                if (enc.includes('gzip')) {
+                    console.warn('eng.traineddata.gz is served with Content-Encoding:gzip. Serve it without Content-Encoding.');
+                    showToast('OCR note: fix eng.traineddata.gz headers (no Content-Encoding).', 'info', 4500);
+                    return { ok: false, reason: 'encoded-gzip' };
+                }
+                if (type && (type.includes('text') || type.includes('html'))) {
+                    console.warn('eng.traineddata.gz served with text/* Content-Type. Prefer application/octet-stream.');
+                }
+                return { ok: true };
+            } catch (_) { return { ok: false, reason: 'head-failed' }; }
+        },
+
+        // Attach speech-to-text to an input + button pair
+        setupSpeechToText(inputEl, btnEl, onChange) {
+            if (!inputEl || !btnEl) return;
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) { btnEl.style.display = 'none'; return; }
+
+            const recognition = new SR();
+            recognition.lang = navigator.language || 'en-US';
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
+
+            let finalTranscript = '';
+
+            const setActive = (active) => {
+                btnEl.classList.toggle('recording', !!active);
             };
 
-            if (file.name.endsWith('.docx')) {
-              reader.readAsArrayBuffer(file);
+            recognition.onstart = () => {
+                this.activeRecognition = recognition;
+                finalTranscript = '';
+                setActive(true);
+            };
+            recognition.onerror = () => {
+                setActive(false);
+            };
+            recognition.onend = () => {
+                setActive(false);
+                if (this.activeRecognition === recognition) this.activeRecognition = null;
+            };
+            recognition.onresult = (event) => {
+                let interim = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const res = event.results[i];
+                    if (res.isFinal) finalTranscript += res[0].transcript;
+                    else interim += res[0].transcript;
+                }
+                const value = (finalTranscript || interim).trim();
+                if (value) {
+                    inputEl.value = value;
+                    if (typeof onChange === 'function') onChange();
+                    else inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            };
+
+            btnEl.addEventListener('click', () => {
+                // Toggle recognition; ensure we stop other active instance
+                if (this.activeRecognition && this.activeRecognition !== recognition) {
+                    try { this.activeRecognition.stop(); } catch {}
+                    this.activeRecognition = null;
+                }
+                try {
+                    if (btnEl.classList.contains('recording')) recognition.stop();
+                    else recognition.start();
+                } catch (e) {
+                    // Some browsers may throw if called too quickly
+                }
+            });
+        },
+
+        // Core App Initialization
+        async init() {
+            await migrateIfNeeded();
+            this.loadData();
+            this.renderToolbar('songs');
+            this.setlistSelect = document.getElementById('setlist-select');
+            this.performanceSetlistSelect = document.getElementById('performance-setlist-select');
+            this.setupEventListeners();
+            // Load from IDB
+            try {
+                this.songs = await DB.getAllSongs();
+            } catch (e) {
+                console.error('Failed to load songs from DB', e);
+                this.songs = [];
+            }
+            await SetlistsManager.load();
+            this.renderSongs();
+            if (this.setlistSelect && this.performanceSetlistSelect) {
+                this.renderSetlists();
+            }
+
+        },
+
+        // Data Management
+        loadData() {
+            this.songs = JSON.parse(localStorage.getItem('songs')) || [];
+            const theme = (localStorage.getItem('theme') === 'light') ? 'light' : 'dark';
+            document.documentElement.dataset.theme = theme;
+        },
+
+        async saveData() {
+            // Bulk write as a fallback for places still calling saveData
+            try { await DB.putSongs(this.songs); } catch (e) { console.error('saveData failed', e); }
+        },
+
+        // Lyrics Management
+        getAllLyrics() {
+            return this.songs;
+        },
+
+        getLyricById(id) {
+            return this.songs.find(song => song.id === id);
+        },
+
+        async addLyric(song) {
+            this.songs.push(song);
+            try { await DB.putSong(song); } catch (e) { console.error('putSong failed', e); }
+            await this.saveData();
+        },
+
+        async removeLyric(id) {
+            this.songs = this.songs.filter(song => song.id !== id);
+            try { await DB.deleteSong(id); } catch (e) { console.error('deleteSong failed', e); }
+            await this.saveData();
+        },
+
+        searchLyrics(query) {
+            const q = String(query || '').trim();
+            if (!q) return this.songs.slice();
+            // Use Fuse.js for fuzzy search across title and lyrics
+            try {
+                const fuse = new Fuse(this.songs, {
+                    keys: [
+                        { name: 'title', weight: 0.75 },
+                        { name: 'lyrics', weight: 0.25 }
+                    ],
+                    includeScore: true,
+                    threshold: 0.35,
+                    ignoreLocation: true,
+                    minMatchCharLength: 2,
+                });
+                return fuse.search(q).map(r => r.item);
+            } catch (e) {
+                // Fallback to simple includes if Fuse isn't available
+                const low = q.toLowerCase();
+                return this.songs.filter(song =>
+                    song.title.toLowerCase().includes(low) ||
+                    (song.lyrics && song.lyrics.toLowerCase().includes(low))
+                );
+            }
+        },
+
+        renameLyric(id, newTitle) {
+            const song = this.getLyricById(id);
+            if (song) {
+                song.title = newTitle;
+                this.saveData();
+            }
+        },
+
+        editLyric(id, newLyrics) {
+            const song = this.getLyricById(id);
+            if (song) {
+                song.lyrics = newLyrics;
+                this.saveData();
+            }
+        },
+
+        // Event Listeners
+
+        setupEventListeners() {
+            this.navButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.tabs.forEach(tab => tab.classList.remove('active'));
+                    this.navButtons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    const tabName = btn.getAttribute('data-tab');
+                    document.getElementById(tabName).classList.add('active');
+                    this.renderToolbar(tabName);
+                    if (tabName === 'songs') this.renderSongs();
+                    if (tabName === 'setlists') this.renderSetlists();
+                    if (tabName === 'performance') this.renderPerformanceTab();
+                });
+            });
+
+            this.saveSongBtn.onclick = () => this.saveSong();
+            this.cancelSongBtn.onclick = () => this.closeSongModal();
+            this.saveSetlistBtn.addEventListener('click', () => this.saveSetlist());
+            this.cancelSetlistBtn.addEventListener('click', () => this.closeSetlistModal());
+            this.availableSongsContainer.addEventListener('click', (e) => this.handleAvailableSongsClick(e));
+            this.currentSetlistSongsContainer.addEventListener('click', (e) => this.handleCurrentSetlistSongsClick(e));
+            this.performanceSongList.addEventListener('click', (e) => this.handlePerformanceSongClick(e));
+            // Add theme toggle button handler
+            document.getElementById('theme-toggle-btn')?.addEventListener('click', () => {
+                const current = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+                const next = current === 'dark' ? 'light' : 'dark';
+                document.documentElement.dataset.theme = next;
+                localStorage.setItem('theme', next);
+            });
+
+            // Export modal controls
+            const exportModal = document.getElementById('export-modal');
+            if (exportModal) {
+                exportModal.addEventListener('click', (e)=>{ if (e.target === exportModal) exportModal.style.display='none'; });
+                document.getElementById('export-cancel-btn')?.addEventListener('click', ()=> exportModal.style.display='none');
+                document.querySelectorAll('input[name="export-what"]').forEach(r=> r.addEventListener('change', ()=> this.updateExportFormatOptions()));
+                document.getElementById('export-download-btn')?.addEventListener('click', ()=> this.handleExportDownload());
+            }
+
+            // Import modal controls
+            const importModal = document.getElementById('import-modal');
+            if (importModal) {
+                importModal.addEventListener('click', (e)=>{ if (e.target === importModal) importModal.style.display='none'; });
+                document.getElementById('import-cancel-btn')?.addEventListener('click', ()=> importModal.style.display='none');
+                document.getElementById('import-run-btn')?.addEventListener('click', ()=> this.handleImportRun());
+                document.querySelectorAll('input[name="import-type"]').forEach(r=> r.addEventListener('change', ()=> this.updateImportOptionsVisibility()));
+                this.updateImportOptionsVisibility();
+            }
+        },
+
+        showEditChoice(id) {
+            const modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.style.display = 'flex';
+            modal.innerHTML = `
+              <div class="modal-content">
+                <h2>Edit Options</h2>
+                <div class="modal-actions">
+                  <button class="btn" id="edit-quick">Quick Edit</button>
+                  <button class="btn primary" id="edit-full">Full Editor</button>
+                  <button class="btn" id="edit-cancel">Cancel</button>
+                </div>
+              </div>`;
+            document.body.appendChild(modal);
+            const close = ()=> modal.remove();
+            modal.addEventListener('click', (e)=> { if (e.target === modal) close(); });
+            modal.querySelector('#edit-quick').onclick = () => { close(); this.openSongModal(id); };
+            modal.querySelector('#edit-full').onclick = () => { close(); window.location.href = `editor/editor.html?songId=${encodeURIComponent(id)}`; };
+            modal.querySelector('#edit-cancel').onclick = () => close();
+        },
+
+        updateExportFormatOptions() {
+            const what = (document.querySelector('input[name="export-what"]:checked')?.value)||'current';
+            const options = document.getElementById('export-format-options');
+            if (!options) return;
+            if (what === 'everything') {
+                options.innerHTML = '<label><input type="radio" name="export-format" value="json" checked> JSON (songs + setlists)</label> <label><input type="radio" name="export-format" value="json-songs"> LyricSmith Library (songs only)</label>';
+            } else if (what === 'songs') {
+                options.innerHTML = '<label><input type="radio" name="export-format" value="json" checked> JSON (array)</label> <label><input type="radio" name="export-format" value="json-lyricsmith"> LyricSmith JSON</label> <label><input type="radio" name="export-format" value="csv"> CSV</label> <label><input type="radio" name="export-format" value="txt"> TXT (one file)</label> <label><input type="radio" name="export-format" value="txt-separate"> TXT (separate files)</label> <label><input type="radio" name="export-format" value="pdf"> PDF</label>';
             } else {
-              reader.readAsText(file);
+                options.innerHTML = '<label><input type="radio" name="export-format" value="json" checked> JSON</label> <label><input type="radio" name="export-format" value="txt"> TXT list</label> <label><input type="radio" name="export-format" value="pdf"> PDF</label>';
             }
-          });
-        };
+        },
 
-        // Show loading indicator on the upload button label + global busy
-        const uploadLabel = document.querySelector('label[for="song-upload-input"]');
-        uploadLabel?.classList.add('loading');
-        ClipboardManager.showToast(`Processing ${files.length} file(s)...`, 'info');
-        showGlobalBusy('Importing files…');
-
-        const songs = await Promise.all(files.map(processFile));
-        const validSongs = songs.filter(Boolean);
-        this.songs.push(...validSongs);
-        const importCount = validSongs.length;
-
-        this.saveSongs();
-        this.renderSongs();
-        ClipboardManager.showToast(`Imported ${importCount} song(s)`, 'success');
-        e.target.value = ""; // Clear input
-        uploadLabel?.classList.remove('loading');
-        hideGlobalBusy();
-        });
-      } else if (this.currentTab === 'setlists') {
-        this.loadSetlists();
-        this.refreshSetlistSelect();
-        document.getElementById('setlist-select')?.addEventListener('change', (e) => {
-          this.currentSetlistId = e.target.value || null;
-          this.renderSetlistEditor();
-        });
-        document.getElementById('new-setlist-btn')?.addEventListener('click', () => this.openSetlistModal());
-        document.getElementById('rename-setlist-btn')?.addEventListener('click', () => this.openSetlistModal('rename'));
-        document.getElementById('delete-setlist-btn')?.addEventListener('click', () => this.deleteCurrentSetlist());
-        // Import modal triggers
-        document.getElementById('import-setlist-btn')?.addEventListener('click', () => {
-          const overlay = document.getElementById('setlist-import-modal-overlay');
-          if (overlay) overlay.hidden = false;
-        });
-        document.getElementById('setlist-import-cancel-btn')?.addEventListener('click', () => {
-          const overlay = document.getElementById('setlist-import-modal-overlay');
-          if (overlay) overlay.hidden = true;
-        });
-        document.querySelectorAll('[data-close="setlist-import-modal-overlay"]').forEach(btn => btn.addEventListener('click', ()=>{
-          const overlay = document.getElementById('setlist-import-modal-overlay');
-          if (overlay) overlay.hidden = true;
-        }));
-        document.getElementById('setlist-import-txt-btn')?.addEventListener('click', ()=> document.getElementById('import-setlist-file')?.click());
-        document.getElementById('setlist-import-ocr-btn')?.addEventListener('click', ()=> document.getElementById('import-setlist-image')?.click());
-        document.getElementById('import-setlist-file')?.addEventListener('change', (e) => { this.handleImportSetlistText(e); const o=document.getElementById('setlist-import-modal-overlay'); if(o) o.hidden=true; });
-        document.getElementById('import-setlist-image')?.addEventListener('change', (e) => { this.handleImportSetlistImage(e); const o=document.getElementById('setlist-import-modal-overlay'); if(o) o.hidden=true; });
-
-        // Export modal triggers
-        document.getElementById('export-setlist-btn')?.addEventListener('click', () => {
-          const overlay = document.getElementById('setlist-export-modal-overlay');
-          if (overlay) overlay.hidden = false;
-        });
-        document.getElementById('setlist-export-cancel-btn')?.addEventListener('click', ()=> { const o=document.getElementById('setlist-export-modal-overlay'); if(o) o.hidden=true; });
-        document.querySelectorAll('[data-close="setlist-export-modal-overlay"]').forEach(btn => btn.addEventListener('click', ()=>{ const o=document.getElementById('setlist-export-modal-overlay'); if(o) o.hidden=true; }));
-        document.getElementById('setlist-export-confirm-btn')?.addEventListener('click', ()=> this.handleExportSetlistsModal());
-      } else {
-        // performance toolbar
-        this.loadSetlists();
-        this.refreshPerformanceSetlistSelect();
-        document.getElementById('performance-setlist-select')?.addEventListener('change', (e) => {
-          this.performanceSetlistId = e.target.value || null;
-          this.renderPerformanceList();
-        });
-        document.getElementById('performance-song-search')?.addEventListener('input', () => this.renderPerformanceList());
-        document.getElementById('start-performance-btn')?.addEventListener('click', () => this.startPerformance());
-        const lastPerf = this.getLastPerformance();
-        const resumeBtn = document.getElementById('resume-performance-btn');
-        if (lastPerf && resumeBtn) {
-          resumeBtn.disabled = false;
-          resumeBtn.addEventListener('click', () => this.startPerformance(true));
-        } else if (resumeBtn) {
-          resumeBtn.disabled = true;
-        }
-      }
-    },
-
-    renderTabContent() {
-      if (this.currentTab === 'songs') {
-        const query = document.getElementById('song-search-input')?.value || '';
-        this.renderSongs(query);
-      } else if (this.currentTab === 'setlists') {
-        this.renderSetlistEditor();
-      } else if (this.currentTab === 'performance') {
-        this.renderPerformanceList();
-      }
-    },
-
-    // ===== SETLISTS STORAGE =====
-    loadSetlists() {
-      try { this.setlists = JSON.parse(localStorage.getItem('setlists') || '[]'); } catch { this.setlists = []; }
-      if (!Array.isArray(this.setlists)) this.setlists = [];
-    },
-    saveSetlists() {
-      try { localStorage.setItem('setlists', JSON.stringify(this.setlists)); } catch {}
-    },
-    getSetlistById(id) { return this.setlists.find(s=>s.id===id) || null; },
-    addSetlist(name) {
-      const id = Date.now().toString(36) + Math.random().toString(36).slice(2,8);
-      const setlist = { id, name: this.normalizeTitle(String(name||'Untitled')), songs: [], createdAt: Date.now(), updatedAt: Date.now() };
-      this.setlists.push(setlist);
-      this.saveSetlists();
-      return setlist;
-    },
-    renameSetlist(id, newName) {
-      const s = this.getSetlistById(id); if (!s) return;
-      s.name = this.normalizeTitle(String(newName||'Untitled'));
-      s.updatedAt = Date.now();
-      this.saveSetlists();
-    },
-    deleteSetlist(id) {
-      this.setlists = this.setlists.filter(s=>s.id!==id);
-      if (this.currentSetlistId === id) this.currentSetlistId = null;
-      this.saveSetlists();
-    },
-    updateSetlistSongs(id, songIds) {
-      const s = this.getSetlistById(id); if (!s) return;
-      s.songs = songIds.slice();
-      s.updatedAt = Date.now();
-      this.saveSetlists();
-    },
-
-    // ===== SETLISTS UI =====
-    refreshSetlistSelect() {
-      const sel = document.getElementById('setlist-select'); if (!sel) return;
-      const opts = ['<option value="">— Select setlist —</option>'];
-      for (const s of this.setlists.slice().sort((a,b)=>a.name.localeCompare(b.name))) {
-        opts.push(`<option value="${s.id}">${escapeHtml(s.name)}</option>`);
-      }
-      sel.innerHTML = opts.join('');
-      if (this.currentSetlistId) sel.value = this.currentSetlistId;
-      else if (this.setlists.length) { this.currentSetlistId = this.setlists[0].id; sel.value = this.currentSetlistId; }
-    },
-    renderSetlistEditor() {
-      // Titles
-      const titleEl = document.getElementById('current-setlist-title');
-      const available = document.getElementById('available-songs');
-      const current = document.getElementById('current-setlist-songs');
-      if (!available || !current) return;
-      const setlist = this.getSetlistById(this.currentSetlistId);
-      titleEl.textContent = setlist ? `Current Setlist — ${setlist.name}` : 'Current Setlist';
-      // Available songs
-      const inSet = new Set(setlist ? setlist.songs : []);
-      const availSongs = this.songs.filter(s => !inSet.has(s.id)).sort((a,b)=>a.title.localeCompare(b.title));
-      available.innerHTML = availSongs.map(s => `
-        <div class="song-item" data-id="${s.id}">
-          <div class="song-info"><span class="song-title">${escapeHtml(s.title)}</span></div>
-          <div class="song-actions">
-            <button class="btn icon-btn add-to-setlist" title="Add"><i class="fas fa-plus"></i></button>
-          </div>
-        </div>
-      `).join('');
-      available.querySelectorAll('.add-to-setlist').forEach(btn => btn.addEventListener('click', (e) => {
-        const id = e.currentTarget.closest('.song-item')?.dataset.id;
-        if (!id || !setlist) return;
-        setlist.songs.push(id);
-        this.saveSetlists();
-        this.renderSetlistEditor();
-      }));
-
-      // Current setlist songs
-      const curSongs = (setlist ? setlist.songs : []).map(id => this.songs.find(s=>s.id===id)).filter(Boolean);
-      current.innerHTML = curSongs.map(s => `
-        <div class="song-item" data-id="${s.id}">
-          <div class="song-info"><span class="song-title">${escapeHtml(s.title)}</span></div>
-          <div class="song-actions">
-            <button class="btn icon-btn remove-from-setlist" title="Remove"><i class="fas fa-minus"></i></button>
-            <span class="drag-handle" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></span>
-          </div>
-        </div>
-      `).join('');
-      current.querySelectorAll('.remove-from-setlist').forEach(btn => btn.addEventListener('click', (e) => {
-        const id = e.currentTarget.closest('.song-item')?.dataset.id;
-        if (!id || !setlist) return;
-        setlist.songs = setlist.songs.filter(x => x !== id);
-        this.saveSetlists();
-        this.renderSetlistEditor();
-      }));
-      // Make sortable
-      if (typeof Sortable !== 'undefined') {
-        Sortable.create(current, {
-          handle: '.drag-handle',
-          animation: 150,
-          onEnd: () => {
-            const ids = Array.from(current.querySelectorAll('.song-item')).map(el => el.dataset.id);
-            this.updateSetlistSongs(this.currentSetlistId, ids);
-          }
-        });
-      }
-    },
-    openSetlistModal(mode='new') {
-      const overlay = document.getElementById('setlist-modal');
-      const title = document.getElementById('setlist-modal-title');
-      const input = document.getElementById('setlist-name-input');
-      const saveBtn = document.getElementById('save-setlist-btn');
-      const cancelBtn = document.getElementById('cancel-setlist-btn');
-      if (!overlay || !title || !input || !saveBtn || !cancelBtn) return;
-      const setlist = this.getSetlistById(this.currentSetlistId);
-      title.textContent = mode === 'rename' ? 'Rename Setlist' : 'New Setlist';
-      input.value = mode === 'rename' && setlist ? setlist.name : '';
-      overlay.hidden = false;
-      const onSave = () => {
-        const name = input.value.trim();
-        if (!name) { ClipboardManager.showToast('Enter a name', 'error'); return; }
-        if (mode === 'rename' && setlist) { this.renameSetlist(setlist.id, name); }
-        else { const s = this.addSetlist(name); this.currentSetlistId = s.id; }
-        overlay.hidden = true;
-        this.refreshSetlistSelect();
-        this.renderSetlistEditor();
-        saveBtn.removeEventListener('click', onSave);
-        cancelBtn.removeEventListener('click', onCancel);
-      };
-      const onCancel = () => {
-        overlay.hidden = true;
-        saveBtn.removeEventListener('click', onSave);
-        cancelBtn.removeEventListener('click', onCancel);
-      };
-      saveBtn.addEventListener('click', onSave);
-      cancelBtn.addEventListener('click', onCancel);
-    },
-    deleteCurrentSetlist() {
-      const s = this.getSetlistById(this.currentSetlistId);
-      if (!s) { ClipboardManager.showToast('No setlist selected', 'info'); return; }
-      if (!confirm(`Delete setlist "${s.name}"?`)) return;
-      this.deleteSetlist(s.id);
-      this.refreshSetlistSelect();
-      this.renderSetlistEditor();
-      ClipboardManager.showToast('Setlist deleted', 'success');
-    },
-
-    // ===== Setlist Import/Export =====
-    async handleImportSetlistText(e) {
-      const file = (e.target.files||[])[0]; if (!file) return;
-      try {
-        const isDocx = /\.docx$/i.test(file.name);
-        let text = '';
-        if (isDocx) {
-          const buf = await file.arrayBuffer();
-          const res = await mammoth.extractRawText({ arrayBuffer: buf });
-          text = String(res.value||'');
-        } else {
-          text = await file.text();
-        }
-        const name = prompt('Name for imported setlist?', this.normalizeTitle(file.name.replace(/\.[^/.]+$/, '')));
-        if (!name) return;
-        const ids = this.extractSetlistSongIdsFromText(text);
-        const s = this.addSetlist(name);
-        s.songs = ids; s.updatedAt = Date.now(); this.saveSetlists();
-        this.currentSetlistId = s.id; this.refreshSetlistSelect(); this.renderSetlistEditor();
-        ClipboardManager.showToast(`Imported setlist with ${ids.length} songs`, 'success');
-      } catch (err) {
-        console.error('Import setlist failed', err);
-        ClipboardManager.showToast('Setlist import failed', 'error');
-      } finally { e.target.value = ''; }
-    },
-
-    async handleImportSetlistImage(e) {
-      const file = (e.target.files||[])[0]; if (!file) return;
-      try {
-        await this.ensureTesseract();
-        const { data } = await Tesseract.recognize(file, 'eng', {
-          workerPath: '../hill-rd-setlist/lib/tesseract/worker.min.js',
-          corePath: '../hill-rd-setlist/lib/tesseract/tesseract-core.wasm.js',
-          langPath: '../hill-rd-setlist/lib/tesseract'
-        });
-        const raw = String((data && data.text) || '');
-        const name = prompt('Name for imported setlist (OCR)?', 'Imported Setlist');
-        if (!name) return;
-        const ids = this.extractSetlistSongIdsFromText(raw);
-        const s = this.addSetlist(name);
-        s.songs = ids; s.updatedAt = Date.now(); this.saveSetlists();
-        this.currentSetlistId = s.id; this.refreshSetlistSelect(); this.renderSetlistEditor();
-        ClipboardManager.showToast(`OCR imported ${ids.length} songs`, 'success');
-      } catch (err) {
-        console.error('OCR import failed', err);
-        ClipboardManager.showToast('OCR import failed', 'error');
-      } finally { e.target.value = ''; }
-    },
-
-    async ensureTesseract() {
-      if (window.Tesseract) return;
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = '../hill-rd-setlist/lib/tesseract/tesseract.min.js';
-        s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
-      });
-    },
-
-    extractSetlistSongIdsFromText(text) {
-      const cleanLine = (s) => String(s||'')
-        .replace(/[\u2018\u2019\u201A\u2032\u00B4]/g, "'")
-        .replace(/[\u201C\u201D\u2033]/g, '"')
-        .replace(/[\u2013\u2014\u2212]/g, '-')
-        .replace(/^\s*[•*\-–—]\s*/, '')
-        .replace(/^\s*\d+[\).\:\-]?\s*/, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
-      const lines = String(text||'').replace(/\r\n?/g,'\n').split('\n').map(cleanLine).filter(Boolean);
-      const titles = [];
-      for (const ln of lines) {
-        // skip likely chord lines (two+ chord tokens)
-        const toks = ln.split(/\s+/).filter(Boolean);
-        const chordToken = /^[A-G](#|b)?(maj|min|m|sus|add|dim|aug)?\d*(\/[A-G](#|b)?)?$/;
-        const chordCount = toks.filter(t=> chordToken.test(t)).length;
-        if (chordCount >= Math.max(2, Math.ceil(toks.length*0.6))) continue;
-        // reasonable length/title-ish
-        if (ln.length >= 2 && ln.length <= 64) titles.push(ln);
-      }
-      const allSongs = this.songs;
-      const fuse = (typeof Fuse !== 'undefined') ? new Fuse(allSongs, { keys:['title'], threshold: 0.35, includeScore: true }) : null;
-      const norm = (s)=> String(s||'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
-      const byNorm = new Map(allSongs.map(s=> [norm(s.title), s]));
-      const ids = [];
-      const used = new Set();
-      for (const t of titles) {
-        let pick = null;
-        // exact normalized match
-        const n = norm(t); if (byNorm.has(n)) pick = byNorm.get(n);
-        // substring match
-        if (!pick) { pick = allSongs.find(s=> norm(s.title).includes(n) || n.includes(norm(s.title))); }
-        // fuzzy
-        if (!pick && fuse) { const r = fuse.search(t); if (r && r.length && r[0].score <= 0.35) pick = r[0].item; }
-        if (pick && !used.has(pick.id)) { ids.push(pick.id); used.add(pick.id); }
-      }
-      return ids;
-    },
-
-    handleExportSetlists() {
-      if (!this.setlists.length) { ClipboardManager.showToast('No setlists to export', 'info'); return; }
-      const which = prompt('Export: type "all" for all setlists, or leave blank for current setlist.', '');
-      if (which && which.toLowerCase() === 'all') {
-        const payload = { setlists: this.setlists, songs: this.songs };
-        const blob = new Blob([JSON.stringify(payload,null,2)], { type: 'application/json' });
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'setlists-export.json'; a.click();
-        ClipboardManager.showToast('Exported all setlists', 'success');
-        return;
-      }
-      const s = this.getSetlistById(this.currentSetlistId);
-      if (!s) { ClipboardManager.showToast('Select a setlist', 'info'); return; }
-      const payload = { setlist: { id: s.id, name: s.name }, songs: s.songs.map(id => this.songs.find(x=>x.id===id)).filter(Boolean) };
-      const blob = new Blob([JSON.stringify(payload,null,2)], { type: 'application/json' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${s.name.replace(/\s+/g,'_')}.json`; a.click();
-      ClipboardManager.showToast('Exported setlist', 'success');
-    },
-
-    handleExportSetlistsModal() {
-      const overlay = document.getElementById('setlist-export-modal-overlay');
-      const which = (document.querySelector('input[name="setlist-export-which"]:checked')?.value) || 'current';
-      const format = (document.querySelector('input[name="setlist-export-format"]:checked')?.value) || 'json';
-      if (which === 'all') {
-        if (format === 'txt') {
-          const content = this.exportAllSetlistsTxt();
-          this.downloadFile('setlists.txt', content, 'text/plain');
-        } else {
-          const payload = { setlists: this.setlists, songs: this.songs };
-          this.downloadFile('setlists-export.json', JSON.stringify(payload, null, 2), 'application/json');
-        }
-        ClipboardManager.showToast('Exported all setlists', 'success');
-        if (overlay) overlay.hidden = true; return;
-      }
-      const s = this.getSetlistById(this.currentSetlistId);
-      if (!s) { ClipboardManager.showToast('Select a setlist', 'info'); return; }
-      if (format === 'txt') {
-        const content = this.exportSingleSetlistTxt(s);
-        const name = `${s.name.replace(/\s+/g,'_')}.txt`;
-        this.downloadFile(name, content, 'text/plain');
-      } else {
-        const payload = { setlist: { id: s.id, name: s.name }, songs: s.songs.map(id => this.songs.find(x=>x.id===id)).filter(Boolean) };
-        const name = `${s.name.replace(/\s+/g,'_')}.json`;
-        this.downloadFile(name, JSON.stringify(payload, null, 2), 'application/json');
-      }
-      ClipboardManager.showToast('Export ready', 'success');
-      if (overlay) overlay.hidden = true;
-    },
-
-    exportSingleSetlistTxt(setlist) {
-      const titles = setlist.songs.map(id => (this.songs.find(s=>s.id===id)?.title)||'').filter(Boolean);
-      const lines = [setlist.name, ''];
-      titles.forEach((t,i)=> lines.push(`${i+1}. ${t}`));
-      lines.push('');
-      return lines.join('\n');
-    },
-    exportAllSetlistsTxt() {
-      const parts = [];
-      for (const s of this.setlists) {
-        parts.push(this.exportSingleSetlistTxt(s));
-      }
-      return parts.join('\n');
-    },
-
-    downloadFile(name, content, mime) {
-      const blob = (content instanceof Blob) ? content : new Blob([content], { type: mime });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click();
-    },
-
-    // ===== PERFORMANCE TAB LIST =====
-    refreshPerformanceSetlistSelect() {
-      const sel = document.getElementById('performance-setlist-select'); if (!sel) return;
-      const opts = ['<option value="">— Select setlist —</option>'];
-      for (const s of this.setlists.slice().sort((a,b)=>a.name.localeCompare(b.name))) {
-        opts.push(`<option value="${s.id}">${escapeHtml(s.name)}</option>`);
-      }
-      sel.innerHTML = opts.join('');
-      if (this.performanceSetlistId) sel.value = this.performanceSetlistId;
-    },
-    renderPerformanceList() {
-      const list = document.getElementById('performance-song-list'); if (!list) return;
-      const setlist = this.getSetlistById(this.performanceSetlistId);
-      const query = (document.getElementById('performance-song-search')?.value || '').toLowerCase();
-      let songsToShow = [];
-      if (setlist) songsToShow = setlist.songs.map(id => this.songs.find(s=>s.id===id)).filter(Boolean);
-      if (query) {
-        const q = query.split(/\s+/).filter(Boolean);
-        const matches = this.songs.filter(s => q.every(t => s.title.toLowerCase().includes(t)));
-        // merge: search results first, then setlist songs (dedup)
-        const seen = new Set(matches.map(s=>s.id));
-        for (const s of songsToShow) if (!seen.has(s.id)) matches.push(s);
-        songsToShow = matches;
-      }
-      list.innerHTML = songsToShow.map(s => `<div class="song-item"><div class="song-info"><span class="song-title">${escapeHtml(s.title)}</span></div></div>`).join('') || '<p class="empty-state">Choose a setlist or search any song.</p>';
-    },
-    startPerformance() {
-      if (!this.performanceSetlistId) { ClipboardManager.showToast('Select a setlist', 'info'); return; }
-      try { localStorage.setItem('performanceSetlistId', this.performanceSetlistId); } catch {}
-      window.location.href = 'performance/performance.html';
-    },
-
-    getLastPerformance() {
-      try { const raw = localStorage.getItem('lastPerformance'); if (!raw) return null; const data = JSON.parse(raw); if (!data || typeof data !== 'object') return null; return data; } catch { return null; }
-    },
-
-    createNewSong() {
-      const newSong = this.createSong('New Song', '');
-      this.songs.push(newSong);
-      this.saveSongs();
-      // Redirect to editor for the new song
-      try { sessionStorage.setItem('lastSongId', String(newSong.id)); } catch {}
-      window.location.href = `editor/editor.html?songId=${newSong.id}`;
-    },
-
-    async exportLibrary(includeMetadata = true) {
-      try {
-        const songs = includeMetadata
-          ? this.songs
-          : this.songs.map(({ title, lyrics, chords }) => ({ title, lyrics, chords }));
-        // Create export data
-        const exportData = {
-          version: '1.0',
-          exportDate: new Date().toISOString(),
-          songCount: songs.length,
-          songs
-        };
-
-        // Create and download JSON file
-        const dataStr = JSON.stringify(exportData, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-        
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(dataBlob);
-        link.download = `lyricsmith-library-${new Date().toISOString().split('T')[0]}.json`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        ClipboardManager.showToast(`Exported ${this.songs.length} songs`, 'success');
-      } catch (err) {
-        console.error('Export failed:', err);
-        ClipboardManager.showToast('Export failed', 'error');
-      }
-    },
-
-    // Export library as plain text (.txt): Title, blank line, lyrics (with [Section] labels).
-    // Optionally include chords above lyrics lines. Removes duplicate title if it appears
-    // as the first non-empty line of the lyrics.
-    async exportLibraryTxt(includeChords = false) {
-      try {
-        const parts = [];
-        const sep = '--------------------';
-        const stripDuplicateTitle = (title, text) => {
-          const t = String(title || '').trim().replace(/\s+/g, ' ');
-          const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
-          let i = 0;
-          while (i < lines.length && lines[i].trim() === '') i++;
-          if (i < lines.length) {
-            const first = lines[i].trim().replace(/\s+/g, ' ');
-            if (first.toLowerCase() === t.toLowerCase()) {
-              lines.splice(i, 1);
-              // If next line is blank, collapse single leading blank
-              if (i < lines.length && lines[i].trim() === '') lines.splice(i, 1);
+        handleExportDownload() {
+            const what = (document.querySelector('input[name="export-what"]:checked')?.value)||'current';
+            const format = (document.querySelector('input[name="export-format"]:checked')?.value)||'json';
+            try {
+                if (what === 'everything') {
+                    if (format === 'json-songs') {
+                        const payload = { songs: this.songs };
+                        this.downloadFile('lyricsmith-library.json', JSON.stringify(payload, null, 2), 'application/json');
+                    } else {
+                        const blob = this.exportEverything();
+                        this.downloadFile('setlist-backup.json', blob, 'application/json');
+                    }
+                } else if (what === 'songs') {
+                    if (format === 'pdf') {
+                        this.exportSongsPDF();
+                    } else if (format === 'txt-separate') {
+                        this.exportSongsAsSeparateTxt();
+                    } else {
+                        const { content, mime, ext } = this.exportSongs({ format });
+                        this.downloadFile(`songs.${ext}`, content, mime);
+                    }
+                } else {
+                    if (format === 'pdf') {
+                        this.exportSetlistsPDF({ which: what });
+                    } else {
+                        const { content, mime, ext, name } = this.exportSetlists({ which: what, format });
+                        this.downloadFile(`${name}.${ext}`, content, mime);
+                    }
+                }
+                showToast('Export ready.', 'success');
+                const m = document.getElementById('export-modal'); if (m) m.style.display='none';
+            } catch (e) {
+                console.error(e); showToast('Export failed.', 'error');
             }
-          }
-          return lines.join('\n');
-        };
-        for (const song of this.songs) {
-          const title = String(song.title || 'Untitled').trim();
-          const normalizedLyrics = this.normalizeSectionLabels(String(song.lyrics || ''))
-            .replace(/\r\n?/g, '\n');
-          let body = stripDuplicateTitle(title, normalizedLyrics);
-          if (includeChords && song.chords && String(song.chords).trim()) {
-            const chords = String(song.chords || '').replace(/\r\n?/g, '\n');
-            // Merge chords with the lyrics AFTER stripping duplicate title
-            body = ClipboardManager.formatLyricsWithChords(body, chords);
-          }
-          parts.push(title);
-          parts.push(''); // blank line between title and body
-          if (body) parts.push(body);
-          parts.push(sep);
-          parts.push(''); // extra blank line between songs
+        },
+
+        // Export songs to a print-friendly PDF with per-page autofit
+        exportSongsPDF() {
+            const songs = this.songs.slice();
+            const escapeHTML = (s) => String(s||'')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+
+            const htmlParts = [];
+            htmlParts.push(`<!DOCTYPE html><html><head><meta charset="utf-8">`);
+            htmlParts.push(`<title>Songs - PDF</title>`);
+            htmlParts.push(`<style>
+                @page { size: A4; margin: 0.75in; }
+                html, body { height: 100%; }
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #000; }
+                /* Fixed-height page area: page height minus margins */
+                .song { page-break-after: always; display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; height: calc(100vh - 1.5in); box-sizing: border-box; padding: 0.75in; overflow: hidden; font-size: 14pt; text-align: left; }
+                .song:last-child { page-break-after: auto; }
+                h1 { font-weight: 700; margin: 0 0 0.6em; line-height: 1.15; }
+                .lyrics { white-space: pre-wrap; line-height: 1.4; overflow-wrap: anywhere; hyphens: auto; }
+                /* On screen, add some padding */
+                @media screen { body { background:#f5f5f5; } .song { box-sizing: border-box; width: 8.27in; height: 11.69in; margin: 12px auto; background:#fff; border: 1px solid #ddd; padding: 0.75in; } }
+            </style></head><body>`);
+            for (const s of songs) {
+                const title = escapeHTML(s.title || 'Untitled');
+                const lyrics = escapeHTML(s.lyrics || '');
+                htmlParts.push(`<section class="song"><h1>${title}</h1><div class="lyrics">${lyrics}</div></section>`);
+            }
+            // Inject improved autofit + auto-print logic
+            htmlParts.push(`<script>
+              (function(){
+                function fits(page){
+                  // small safety margin to avoid last-line cutoff
+                  return page.scrollHeight <= page.clientHeight - 1;
+                }
+                function applySizes(page, tSize, lSize, lHeight){
+                  const title = page.querySelector('h1');
+                  const lyrics = page.querySelector('.lyrics');
+                  if (title) title.style.fontSize = tSize + 'pt';
+                  if (lyrics) { lyrics.style.fontSize = lSize + 'pt'; lyrics.style.lineHeight = lHeight; }
+                  // reflow
+                  void page.offsetHeight;
+                }
+                function fitPage(page){
+                  const titleMin = 16;
+                  let titleSize = 26; // start large
+                  let lyricsLow = 9, lyricsHigh = 20;
+                  let lyricsSize = lyricsHigh;
+                  let lineHeight = 1.4;
+
+                  applySizes(page, titleSize, lyricsSize, lineHeight);
+                  // Shrink lyrics first via binary search
+                  if (!fits(page)){
+                    let low = lyricsLow, high = lyricsHigh;
+                    for (let i=0; i<14; i++){
+                      const mid = Math.floor((low + high) / 2);
+                      applySizes(page, titleSize, mid, lineHeight);
+                      if (fits(page)) { lyricsSize = mid; low = mid; }
+                      else { high = mid - 1; }
+                      if (high <= low) break;
+                    }
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  // If still overflowing, start shrinking the title
+                  while (!fits(page) && titleSize > titleMin){
+                    titleSize -= 2;
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  // If still overflowing, tighten lyrics line-height a bit
+                  if (!fits(page)){
+                    lineHeight = 1.28;
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  // As a last resort, reduce internal padding slightly to gain space
+                  if (!fits(page)){
+                    page.style.padding = '0.6in';
+                    void page.offsetHeight;
+                  }
+                }
+                function fitAll(){
+                  const pages = document.querySelectorAll('.song');
+                  pages.forEach(p => {
+                    // reset any inline styles
+                    p.removeAttribute('style');
+                    const t = p.querySelector('h1'); const l = p.querySelector('.lyrics');
+                    if (t) t.removeAttribute('style'); if (l) l.removeAttribute('style');
+                  });
+                  requestAnimationFrame(() => {
+                    pages.forEach(p => fitPage(p));
+                    setTimeout(() => { try { window.focus(); window.print(); } catch(e){} }, 200);
+                  });
+                }
+                if (document.readyState === 'complete') fitAll();
+                else window.addEventListener('load', fitAll);
+              })();
+            </script>`);
+            htmlParts.push(`</body></html>`);
+            const html = htmlParts.join('');
+
+            const win = window.open('', '_blank');
+            if (!win) { alert('Popup blocked: allow popups to export PDF.'); return; }
+            win.document.open();
+            win.document.write(html);
+            win.document.close();
+            // Printing will be triggered by the injected script after autofit.
+        },
+
+        exportSongs({ format }) {
+            const songs = this.songs.slice();
+            if (format === 'json') return { content: JSON.stringify(songs, null, 2), mime: 'application/json', ext: 'json' };
+            if (format === 'json-lyricsmith') {
+                const payload = {
+                    version: '1.0',
+                    exportDate: new Date().toISOString(),
+                    songCount: songs.length,
+                    songs
+                };
+                return { content: JSON.stringify(payload, null, 2), mime: 'application/json', ext: 'json' };
+            }
+            if (format === 'csv') {
+                const header = 'Title,Lyrics\n';
+                const esc = (s)=> '"'+String(s||'').replace(/"/g,'""')+'"';
+                const rows = songs.map(s=> `${esc(s.title)},${esc(s.lyrics)}`).join('\n');
+                return { content: header+rows, mime: 'text/csv', ext: 'csv' };
+            }
+            // txt concatenation
+            const txt = songs.map(s=> `${s.title}\n\n${s.lyrics}`).join('\n\n-----\n\n');
+            return { content: txt, mime: 'text/plain', ext: 'txt' };
+        },
+
+        exportSetlists({ which, format }) {
+            const all = SetlistsManager.getAllSetlists();
+            const current = which === 'current' ? all.find(s=> s.id === this.currentSetlistId) : null;
+            if (which === 'current' && !current) throw new Error('No setlist selected');
+            const setlists = which === 'current' ? [current] : all;
+            if (format === 'json') {
+                const data = setlists.map(sl=> ({ setlist: sl, songs: sl.songs.map(id=> this.songs.find(s=> s.id===id)).filter(Boolean) }));
+                const name = which === 'current' ? (current.name || 'setlist') : 'setlists';
+                return { content: JSON.stringify(data, null, 2), mime: 'application/json', ext: 'json', name: name.replace(/\s+/g,'_') };
+            }
+            // txt list of titles
+            const content = setlists.map(sl=> `# ${sl.name}\n` + sl.songs.map(id=> (this.songs.find(s=> s.id===id)?.title)||'').filter(Boolean).join('\n')).join('\n\n');
+            const name = which === 'current' ? (current.name || 'setlist') : 'setlists';
+            return { content, mime: 'text/plain', ext: 'txt', name: name.replace(/\s+/g,'_') };
+        },
+
+        exportEverything() {
+            const setlists = SetlistsManager.getAllSetlists();
+            const data = { songs: this.songs, setlists };
+            return JSON.stringify(data, null, 2);
+        },
+
+        // Export songs as separate .txt files (bundled into a ZIP)
+        exportSongsAsSeparateTxt() {
+            const sanitizeFilename = (name) => {
+                const base = String(name || 'Untitled').replace(/[\\/:*?"<>|]+/g, '').trim().replace(/\s+/g, '_');
+                return base.slice(0, 80) || 'song';
+            };
+            const encoder = new TextEncoder();
+            const files = this.songs.map(s => {
+                const title = s.title || 'Untitled';
+                const text = `${title}\n\n${s.lyrics || ''}`;
+                return { name: sanitizeFilename(title) + '.txt', bytes: encoder.encode(text) };
+            });
+            const blob = this._buildZipFromFiles(files);
+            this.downloadFile('songs_txt_bundle.zip', blob, 'application/zip');
+        },
+
+        // Minimal ZIP builder (store mode, no compression)
+        _buildZipFromFiles(files) {
+            const makeUint8 = (len) => new Uint8Array(len);
+            const writeU16 = (arr, off, val) => { arr[off] = val & 0xff; arr[off+1] = (val >>> 8) & 0xff; };
+            const writeU32 = (arr, off, val) => { arr[off] = val & 0xff; arr[off+1] = (val >>> 8) & 0xff; arr[off+2] = (val >>> 16) & 0xff; arr[off+3] = (val >>> 24) & 0xff; };
+            const dosDateTime = (d) => {
+                const year = d.getFullYear();
+                const month = d.getMonth() + 1; // 1-12
+                const day = d.getDate();
+                const hours = d.getHours();
+                const minutes = d.getMinutes();
+                const seconds = Math.floor(d.getSeconds() / 2);
+                const dt = ((year - 1980) << 9) | (month << 5) | day;
+                const tm = (hours << 11) | (minutes << 5) | seconds;
+                return { dt, tm };
+            };
+            // CRC32 table
+            const crcTable = (() => {
+                const table = new Uint32Array(256);
+                for (let n = 0; n < 256; n++) {
+                    let c = n;
+                    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+                    table[n] = c >>> 0;
+                }
+                return table;
+            })();
+            const crc32 = (bytes) => {
+                let c = 0xffffffff;
+                for (let i = 0; i < bytes.length; i++) c = crcTable[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+                return (c ^ 0xffffffff) >>> 0;
+            };
+
+            const parts = [];
+            const central = [];
+            let offset = 0;
+            const now = new Date();
+            const { dt, tm } = dosDateTime(now);
+            for (const f of files) {
+                const nameBytes = new TextEncoder().encode(f.name);
+                const data = f.bytes instanceof Uint8Array ? f.bytes : new Uint8Array(f.bytes);
+                const crc = crc32(data);
+                // Local file header
+                const lf = makeUint8(30 + nameBytes.length);
+                writeU32(lf, 0, 0x04034b50);
+                writeU16(lf, 4, 20); // version needed
+                writeU16(lf, 6, 0);  // flags
+                writeU16(lf, 8, 0);  // compression (0=store)
+                writeU16(lf, 10, tm);
+                writeU16(lf, 12, dt);
+                writeU32(lf, 14, crc);
+                writeU32(lf, 18, data.length);
+                writeU32(lf, 22, data.length);
+                writeU16(lf, 26, nameBytes.length);
+                writeU16(lf, 28, 0); // extra len
+                lf.set(nameBytes, 30);
+                parts.push(lf, data);
+                const localOffset = offset;
+                offset += lf.length + data.length;
+                // Central directory header
+                const cf = makeUint8(46 + nameBytes.length);
+                writeU32(cf, 0, 0x02014b50);
+                writeU16(cf, 4, 20); // version made by
+                writeU16(cf, 6, 20); // version needed
+                writeU16(cf, 8, 0);  // flags
+                writeU16(cf, 10, 0); // compression
+                writeU16(cf, 12, tm);
+                writeU16(cf, 14, dt);
+                writeU32(cf, 16, crc);
+                writeU32(cf, 20, data.length);
+                writeU32(cf, 24, data.length);
+                writeU16(cf, 28, nameBytes.length);
+                writeU16(cf, 30, 0); // extra len
+                writeU16(cf, 32, 0); // comment len
+                writeU16(cf, 34, 0); // disk number
+                writeU16(cf, 36, 0); // internal attrs
+                writeU32(cf, 38, 0); // external attrs
+                writeU32(cf, 42, localOffset);
+                cf.set(nameBytes, 46);
+                central.push(cf);
+            }
+            const centralStart = offset;
+            for (const c of central) { parts.push(c); offset += c.length; }
+            const centralSize = offset - centralStart;
+            // End of central directory
+            const eocd = makeUint8(22);
+            writeU32(eocd, 0, 0x06054b50);
+            writeU16(eocd, 4, 0); // disk
+            writeU16(eocd, 6, 0); // start disk
+            writeU16(eocd, 8, files.length);
+            writeU16(eocd, 10, files.length);
+            writeU32(eocd, 12, centralSize);
+            writeU32(eocd, 16, centralStart);
+            writeU16(eocd, 20, 0); // comment len
+            parts.push(eocd);
+            return new Blob(parts, { type: 'application/zip' });
+        },
+
+        // Export current/all setlists to a print-friendly PDF with per-page autofit
+        exportSetlistsPDF({ which }) {
+            const all = SetlistsManager.getAllSetlists();
+            const current = which === 'current' ? all.find(s=> s.id === this.currentSetlistId) : null;
+            if (which === 'current' && !current) { alert('No setlist selected.'); return; }
+            const setlists = which === 'current' ? [current] : all;
+
+            const songsInOrder = [];
+            for (const sl of setlists) {
+                for (const id of sl.songs) {
+                    const song = this.songs.find(s=> s.id === id);
+                    if (song) songsInOrder.push(song);
+                }
+            }
+
+            const escapeHTML = (s) => String(s||'')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+
+            const htmlParts = [];
+            htmlParts.push(`<!DOCTYPE html><html><head><meta charset="utf-8">`);
+            const titleBase = which === 'current' ? (current?.name || 'Setlist') : 'All Setlists';
+            htmlParts.push(`<title>${escapeHTML(titleBase)} - PDF</title>`);
+            htmlParts.push(`<style>
+                @page { size: A4; margin: 0.75in; }
+                html, body { height: 100%; }
+                body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; color: #000; }
+                .song { page-break-after: always; display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; height: calc(100vh - 1.5in); box-sizing: border-box; padding: 0.75in; overflow: hidden; font-size: 14pt; text-align: left; }
+                .song:last-child { page-break-after: auto; }
+                h1 { font-weight: 700; margin: 0 0 0.6em; line-height: 1.15; }
+                .lyrics { white-space: pre-wrap; line-height: 1.4; overflow-wrap: anywhere; hyphens: auto; }
+                @media screen { body { background:#f5f5f5; } .song { box-sizing: border-box; width: 8.27in; height: 11.69in; margin: 12px auto; background:#fff; border: 1px solid #ddd; padding: 0.75in; } }
+            </style></head><body>`);
+            for (const s of songsInOrder) {
+                const title = escapeHTML(s.title || 'Untitled');
+                const lyrics = escapeHTML(s.lyrics || '');
+                htmlParts.push(`<section class="song"><h1>${title}</h1><div class="lyrics">${lyrics}</div></section>`);
+            }
+            htmlParts.push(`<script>
+              (function(){
+                function fits(page){
+                  return page.scrollHeight <= page.clientHeight - 1;
+                }
+                function applySizes(page, tSize, lSize, lHeight){
+                  const title = page.querySelector('h1');
+                  const lyrics = page.querySelector('.lyrics');
+                  if (title) title.style.fontSize = tSize + 'pt';
+                  if (lyrics) { lyrics.style.fontSize = lSize + 'pt'; lyrics.style.lineHeight = lHeight; }
+                  void page.offsetHeight;
+                }
+                function fitPage(page){
+                  const titleMin = 16;
+                  let titleSize = 26;
+                  let lyricsLow = 9, lyricsHigh = 20;
+                  let lyricsSize = lyricsHigh;
+                  let lineHeight = 1.4;
+                  applySizes(page, titleSize, lyricsSize, lineHeight);
+                  if (!fits(page)){
+                    let low = lyricsLow, high = lyricsHigh;
+                    for (let i=0; i<14; i++){
+                      const mid = Math.floor((low + high) / 2);
+                      applySizes(page, titleSize, mid, lineHeight);
+                      if (fits(page)) { lyricsSize = mid; low = mid; }
+                      else { high = mid - 1; }
+                      if (high <= low) break;
+                    }
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  while (!fits(page) && titleSize > titleMin){
+                    titleSize -= 2;
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  if (!fits(page)){
+                    lineHeight = 1.28;
+                    applySizes(page, titleSize, lyricsSize, lineHeight);
+                  }
+                  if (!fits(page)){
+                    page.style.padding = '0.6in';
+                    void page.offsetHeight;
+                  }
+                }
+                function fitAll(){
+                  const pages = document.querySelectorAll('.song');
+                  pages.forEach(p => {
+                    p.removeAttribute('style');
+                    const t = p.querySelector('h1'); const l = p.querySelector('.lyrics');
+                    if (t) t.removeAttribute('style'); if (l) l.removeAttribute('style');
+                  });
+                  requestAnimationFrame(() => {
+                    pages.forEach(p => fitPage(p));
+                    setTimeout(() => { try { window.focus(); window.print(); } catch(e){} }, 200);
+                  });
+                }
+                if (document.readyState === 'complete') fitAll();
+                else window.addEventListener('load', fitAll);
+              })();
+            </script>`);
+            htmlParts.push(`</body></html>`);
+            const html = htmlParts.join('');
+
+            const win = window.open('', '_blank');
+            if (!win) { alert('Popup blocked: allow popups to export PDF.'); return; }
+            win.document.open();
+            win.document.write(html);
+            win.document.close();
+            // Printing will be triggered by the injected script after autofit.
+        },
+
+        updateImportOptionsVisibility() {
+            const type = (document.querySelector('input[name="import-type"]:checked')?.value)||'songs';
+            const dup = document.getElementById('songs-dup-label');
+            if (dup) dup.style.display = type === 'songs' ? 'block' : 'none';
+        },
+
+        async handleImportRun() {
+            const type = (document.querySelector('input[name="import-type"]:checked')?.value)||'songs';
+            const filesInput = document.getElementById('import-file-input');
+            const files = filesInput?.files;
+            if (!files || !files.length) { showToast('Choose file(s) to import', 'info'); return; }
+            try {
+                if (type === 'songs') {
+                    const mode = document.getElementById('songs-dup-mode')?.value || 'skip';
+                    const result = await this.importSongs(files, mode);
+                    showToast(`Imported ${result.added} songs (${result.skipped} skipped).`, 'success');
+                } else if (type === 'setlist') {
+                    const result = await this.importSetlistFiles(files);
+                    if (result && result.setlist) {
+                        this.currentSetlistId = result.setlist.id;
+                        this.renderSetlists();
+                    }
+                } else {
+                    const result = await this.restoreFromJSON(files[0]);
+                    if (result) {
+                        this.songs = await DB.getAllSongs();
+                        await SetlistsManager.load();
+                        this.renderSongs();
+                        this.renderSetlists();
+                        showToast('Restore complete.', 'success');
+                    }
+                }
+                const m = document.getElementById('import-modal'); if (m) m.style.display='none';
+                filesInput.value = '';
+            } catch (e) { console.error(e); showToast('Import failed.', 'error'); }
+        },
+
+        async importSongs(fileList, dupMode) {
+            let added=0, skipped=0;
+            const titleKey = (s)=> (s.title||'').trim().toLowerCase();
+            const existing = new Map(this.songs.map(s=> [titleKey(s), 1]));
+            const ensureUniqueTitle = (t)=>{
+                if (dupMode === 'copy') {
+                    let base=t, n=1; let cand=base;
+                    while (existing.has(cand.trim().toLowerCase())) { n++; cand = `${base} (Copy ${n})`; }
+                    return cand;
+                }
+                return t;
+            };
+            const addOne = async (song)=>{
+                const key = titleKey(song);
+                if (existing.has(key) && dupMode==='skip') { skipped++; return; }
+                const title = ensureUniqueTitle(song.title||'Untitled');
+                const s = { id: song.id || (Date.now().toString()+Math.random().toString(16).slice(2)), title, lyrics: song.lyrics||'' };
+                this.songs.push(s); existing.set(title.trim().toLowerCase(),1); added++;
+                await DB.putSong(s);
+            };
+            for (const file of fileList) {
+                if (/\.json$/i.test(file.name)) {
+                    const text = await file.text();
+                    let parsed;
+                    try { parsed = JSON.parse(text); } catch { parsed = null; }
+                    if (!parsed) continue;
+                    // Accept multiple formats:
+                    // - Array of songs [{ title, lyrics, ... }]
+                    // - Object with { songs: [...] } (e.g., LyricSmith export or full backups)
+                    // - Object with { setlist, songs } or Array of such (import just the songs)
+                    let songsToAdd = [];
+                    if (Array.isArray(parsed)) {
+                        // Could be an array of songs, or an array of { setlist, songs }
+                        if (parsed.length && parsed[0] && typeof parsed[0] === 'object' && 'setlist' in parsed[0] && 'songs' in parsed[0]) {
+                            for (const entry of parsed) { if (entry && Array.isArray(entry.songs)) songsToAdd.push(...entry.songs); }
+                        } else {
+                            songsToAdd = parsed;
+                        }
+                    } else if (parsed && typeof parsed === 'object') {
+                        if (Array.isArray(parsed.songs)) {
+                            songsToAdd = parsed.songs;
+                        } else if (parsed.setlist && Array.isArray(parsed.songs)) {
+                            songsToAdd = parsed.songs;
+                        }
+                    }
+                    for (const s of songsToAdd) await addOne(s);
+                } else if (/\.csv$/i.test(file.name)) {
+                    const text = await file.text();
+                    const rows = this.parseCSV(text);
+                    for (let i=1;i<rows.length;i++){ const [Title, Lyrics] = rows[i]; if (!Title) continue; await addOne({ title: Title, lyrics: Lyrics||'' }); }
+                } else if (/\.txt$/i.test(file.name)) {
+                    const text = await file.text();
+                    const title = this.normalizeTitle(file.name);
+                    await addOne({ title, lyrics: text });
+                } else if (/\.docx$/i.test(file.name)) {
+                    const buf = await file.arrayBuffer();
+                    const result = await mammoth.extractRawText({ arrayBuffer: buf });
+                    const title = this.normalizeTitle(file.name);
+                    await addOne({ title, lyrics: result.value });
+                }
+            }
+            await this.saveData();
+            this.renderSongs();
+            return { added, skipped };
+        },
+
+        async importSetlistFiles(fileList) {
+            const file = fileList[0]; if (!file) return null;
+            if (/\.json$/i.test(file.name)) {
+                const text = await file.text();
+                const obj = JSON.parse(text);
+                if (Array.isArray(obj)) {
+                    // array of { setlist, songs }
+                    let last=null;
+                    for (const entry of obj) {
+                        const { setlist, songs } = entry;
+                        if (songs && songs.length) await this.mergeSongsByTitle(songs, 'skip');
+                        last = SetlistsManager.addSetlist(setlist.name, (setlist.songs||[]).filter(Boolean));
+                    }
+                    return { setlist: last };
+                } else if (obj && obj.setlist) {
+                    if (obj.songs && obj.songs.length) await this.mergeSongsByTitle(obj.songs, 'skip');
+                    const sl = SetlistsManager.addSetlist(obj.setlist.name, (obj.setlist.songs||[]).filter(Boolean));
+                    return { setlist: sl };
+                }
+                return null;
+            }
+            // txt/docx flow with fuzzy matching
+            if (/\.docx$/i.test(file.name)) {
+                const buf = await file.arrayBuffer();
+                const result = await mammoth.extractRawText({ arrayBuffer: buf });
+                return finishImportSetlist(file.name.replace(/\.[^/.]+$/, ''), result.value);
+            } else {
+                const text = await file.text();
+                return finishImportSetlist(file.name.replace(/\.[^/.]+$/, ''), text);
+            }
+        },
+
+        async restoreFromJSON(file) {
+            const text = await file.text();
+            const obj = JSON.parse(text);
+            if (!obj || (!Array.isArray(obj.songs) && !Array.isArray(obj.setlists))) return false;
+            if (Array.isArray(obj.songs)) {
+                await this.mergeSongsByTitle(obj.songs, 'skip');
+            }
+            if (Array.isArray(obj.setlists)) {
+                for (const s of obj.setlists) {
+                    // de-dup setlist names
+                    let name = s.name?.trim() || 'Imported';
+                    const existing = SetlistsManager.getAllSetlists().map(x=>x.name.toLowerCase());
+                    let base=name, n=1; while (existing.includes(name.toLowerCase())) { name = `${base} (Imported ${n++})`; }
+                    const sl = { id: s.id || (Date.now().toString()+Math.random().toString(16).slice(2)), name, songs: (s.songs||[]).filter(Boolean), createdAt: Date.now(), updatedAt: Date.now() };
+                    await DB.putSetlist(sl);
+                }
+                await SetlistsManager.load();
+            }
+            return true;
+        },
+
+        async mergeSongsByTitle(incoming, dupMode) {
+            const titleKey = (s)=> (s.title||'').trim().toLowerCase();
+            const existing = new Map(this.songs.map(s=> [titleKey(s), s]));
+            for (const s of incoming) {
+                const k = titleKey(s);
+                if (existing.has(k) && dupMode==='skip') continue;
+                let title = s.title || 'Untitled';
+                if (existing.has(k) && dupMode==='copy') {
+                    let base=title, n=1; let cand=base;
+                    while (existing.has(cand.trim().toLowerCase())) { n++; cand = `${base} (Copy ${n})`; }
+                    title = cand;
+                }
+                const song = { id: s.id || (Date.now().toString()+Math.random().toString(16).slice(2)), title, lyrics: s.lyrics||'' };
+                this.songs.push(song); existing.set(title.trim().toLowerCase(), song);
+                await DB.putSong(song);
+            }
+            await this.saveData();
+        },
+
+        parseCSV(text) {
+            const rows = [];
+            let i=0, field='', row=[], inq=false; const push=()=>{ row.push(field); field=''; };
+            while (i<text.length){
+                const c=text[i++];
+                if (inq){
+                    if (c==='"'){ if (text[i]==='"'){ field+='"'; i++; } else { inq=false; } }
+                    else field+=c;
+                } else {
+                    if (c===','){ push(); }
+                    else if (c==='\n'){ push(); rows.push(row); row=[]; }
+                    else if (c==='\r'){ /* ignore */ }
+                    else if (c==='"'){ inq=true; }
+                    else field+=c;
+                }
+            }
+            push(); rows.push(row); return rows;
+        },
+
+        // Song UI and Actions
+        renderSongs() {
+            // Empty state when there are no songs in the DB
+            if (!Array.isArray(this.songs) || this.songs.length === 0) {
+                this.songList.innerHTML = `
+                    <div class="empty-message">
+                      <p>Upload songs (<code>.txt</code>, <code>.docx</code>) to get started.</p>
+                      <button id="upload-hint-btn" class="btn primary">
+                        <i class="fas fa-upload"></i> Upload Songs
+                      </button>
+                    </div>
+                `;
+                // Wire the hint button to the hidden file input
+                const hintBtn = document.getElementById('upload-hint-btn');
+                if (hintBtn) {
+                    hintBtn.addEventListener('click', () => {
+                        document.getElementById('song-upload-input')?.click();
+                    });
+                }
+                return;
+            }
+
+            const query = (this.songSearchInput?.value || '').trim();
+            const filteredSongs = !query
+                ? this.searchLyrics(query).sort((a, b) => a.title.localeCompare(b.title))
+                : this.searchLyrics(query); // Keep Fuse relevance order when searching
+            this.songList.innerHTML = filteredSongs.map(song => `
+                <div class="song-item" data-id="${song.id}">
+                    <span>${song.title}</span>
+                    <div class="song-actions">
+                        <button class="btn edit-song-btn" title="Edit"><i class="fas fa-pen"></i></button>
+                        <button class="btn danger delete-song-btn" title="Delete"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+            `).join('');
+
+            document.querySelectorAll('.edit-song-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const id = e.target.closest('.song-item').dataset.id;
+                    this.showEditChoice(id);
+                });
+            });
+
+            document.querySelectorAll('.delete-song-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const id = e.target.closest('.song-item').dataset.id;
+                    this.deleteSong(id);
+                });
+            });
+        },
+
+        openSongModal(id = null) {
+            this.currentSongId = id;
+            if (id) {
+                const song = this.getLyricById(id);
+                this.songModalTitle.textContent = 'Edit Song';
+                this.songTitleInput.value = song.title;
+                this.songLyricsInput.value = song.lyrics;
+            } else {
+                this.songModalTitle.textContent = 'Add Song';
+                this.songTitleInput.value = '';
+                this.songLyricsInput.value = '';
+            }
+            this.songModal.style.display = 'block';
+        },
+
+        closeSongModal() {
+            this.songModal.style.display = 'none';
+        },
+
+        async saveSong() {
+            const title = this.normalizeTitle(this.songTitleInput.value.trim());
+            const lyrics = this.songLyricsInput.value.trim();
+            if (!title) return;
+            if (this.currentSongId) {
+                const song = this.songs.find(s => s.id === this.currentSongId);
+                song.title = title;
+                song.lyrics = lyrics;
+                try { await DB.putSong(song); } catch (e) {}
+            } else {
+                if (this.isDuplicateTitle(title)) {
+                    this.closeSongModal();
+                    return;
+                }
+                const newSong = {
+                    id: Date.now().toString(),
+                    title,
+                    lyrics,
+                };
+                this.songs.push(newSong);
+                try { await DB.putSong(newSong); } catch (e) {}
+            }
+            await this.saveData();
+            this.renderSongs();
+            this.closeSongModal();
+        },
+
+        deleteSong(id) {
+            const inSetlists = SetlistsManager.getAllSetlists().filter(s => s.songs.includes(id));
+            const count = inSetlists.length;
+            const msg = count ? `Delete this song and update ${count} setlist(s)?` : 'Delete this song?';
+            confirmDialog(msg, async () => {
+                await this.removeLyric(id);
+                inSetlists.forEach(s => SetlistsManager.removeSongFromSetlist(s.id, id));
+                this.renderSongs();
+                this.renderSetlists();
+                showToast(count ? `Deleted song and updated ${count} setlists.` : 'Deleted song.', 'success');
+            });
+        },
+
+        async handleFileUpload(event) {
+            const files = Array.from(event.target.files || []);
+            if (!files.length) return;
+
+            let imported = 0, skipped = 0, failed = 0;
+
+            const readAsArrayBuffer = (file) => new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onerror = () => reject(new Error('read-failed'));
+                r.onload = () => resolve(r.result);
+                r.readAsArrayBuffer(file);
+            });
+            const readAsText = (file) => new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onerror = () => reject(new Error('read-failed'));
+                r.onload = () => resolve(r.result);
+                r.readAsText(file);
+            });
+
+            const tasks = files.map(async (file) => {
+                try {
+                    const title = this.normalizeTitle(file.name);
+                    if (this.isDuplicateTitle(title)) { skipped++; return; }
+                    let lyrics = '';
+                    if (/\.docx$/i.test(file.name)) {
+                        const buf = await readAsArrayBuffer(file);
+                        const res = await mammoth.extractRawText({ arrayBuffer: buf });
+                        lyrics = String(res?.value || '');
+                    } else {
+                        lyrics = String(await readAsText(file));
+                    }
+                    const s = { id: Date.now().toString() + Math.random().toString(16).slice(2), title, lyrics };
+                    this.songs.push(s);
+                    try { await DB.putSong(s); } catch {}
+                    imported++;
+                } catch (e) {
+                    console.warn('Upload import failed for', file?.name, e);
+                    failed++;
+                }
+            });
+
+            await Promise.all(tasks);
+            try { await this.saveData(); } catch {}
+            this.renderSongs();
+
+            // Reset input for subsequent imports
+            event.target.value = '';
+
+            const parts = [];
+            if (imported) parts.push(`${imported} imported`);
+            if (skipped) parts.push(`${skipped} skipped (duplicates)`);
+            if (failed) parts.push(`${failed} failed`);
+            const msg = parts.length ? `Upload complete: ${parts.join(', ')}.` : 'No files were imported.';
+            showToast(msg, imported ? 'success' : 'info', 4000);
+        },
+
+        // Setlist Management
+        renderSetlists() {
+            const setlists = SetlistsManager.getAllSetlists();
+            if (this.setlistSelect) {
+                this.setlistSelect.innerHTML = '<option value="">Select a setlist...</option>';
+            }
+            if (this.performanceSetlistSelect) {
+                const prev = this.performanceSetlistSelect.value || this.performanceSetlistId || '';
+                this.performanceSetlistSelect.innerHTML = '<option value="">All Songs</option>';
+                this.performanceSetlistSelect.dataset.prevValue = prev;
+            }
+
+            setlists.forEach(s => {
+                if (this.setlistSelect) {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.textContent = s.name;
+                    this.setlistSelect.appendChild(opt);
+                }
+                if (this.performanceSetlistSelect) {
+                    const perfOpt = document.createElement('option');
+                    perfOpt.value = s.id || '';
+                    perfOpt.textContent = s.name;
+                    this.performanceSetlistSelect.appendChild(perfOpt);
+                }
+            });
+
+            if (this.performanceSetlistSelect) {
+                const restore = this.performanceSetlistSelect.dataset.prevValue || '';
+                if (restore) this.performanceSetlistSelect.value = restore;
+            }
+
+            if (setlists.length && this.currentSetlistId) {
+                if (this.setlistSelect) this.setlistSelect.value = this.currentSetlistId;
+                this.renderSetlistSongs();
+            } else if (setlists.length > 0) {
+                this.currentSetlistId = setlists[0].id;
+                if (this.setlistSelect) this.setlistSelect.value = this.currentSetlistId;
+                this.renderSetlistSongs();
+            } else {
+                this.currentSetlistId = null;
+                this.availableSongsContainer.innerHTML = '<p>No songs available</p>';
+                this.currentSetlistSongsContainer.innerHTML = '<p>No setlist selected</p>';
+                this.currentSetlistTitle.textContent = 'Current Setlist';
+            }
+        },
+
+        renderSetlistSongs() {
+            const setlist = SetlistsManager.getSetlistById(this.currentSetlistId);
+            const allSongs = this.songs;
+
+            if (!setlist) {
+                this.availableSongsContainer.innerHTML = '<p>No setlist selected</p>';
+                this.currentSetlistSongsContainer.innerHTML = '<p>No setlist selected</p>';
+                return;
+            }
+
+            const availableSongs = allSongs
+                .filter(s => !setlist.songs.includes(s.id))
+                .sort((a, b) => a.title.localeCompare(b.title));
+            this.availableSongsContainer.innerHTML = availableSongs.length > 0 
+                ? availableSongs.map(s =>
+                    `<div class="song-item" data-id="${s.id}">
+                        <span>${s.title}</span>
+                        <button class="btn add-to-setlist-btn" title="Add to Setlist"><i class="fas fa-arrow-right"></i></button>
+                    </div>`
+                ).join('')
+                : '<p>All songs are in this setlist</p>';
+
+            const setlistSongs = setlist.songs.map(id => allSongs.find(s => s.id === id)).filter(Boolean);
+            this.currentSetlistSongsContainer.innerHTML = setlistSongs.length > 0
+                ? setlistSongs.map(s =>
+                    `<div class="song-item sortable-setlist-song" data-id="${s.id}">
+                        <span class="drag-handle" title="Drag to reorder" style="cursor:grab;"><i class="fas fa-grip-vertical"></i></span>
+                        <span class="song-title">${s.title}</span>
+                        <div>
+                            <button class="btn move-up-btn" title="Move Up"><i class="fas fa-arrow-up"></i></button>
+                            <button class="btn move-down-btn" title="Move Down"><i class="fas fa-arrow-down"></i></button>
+                            <button class="btn remove-from-setlist-btn" title="Remove from Setlist"><i class="fas fa-times"></i></button>
+                        </div>
+                    </div>`
+                ).join('')
+                : '<p>No songs in this setlist</p>';
+
+            if (this.sortableSetlist) {
+                this.sortableSetlist.destroy();
+            }
+            this.sortableSetlist = Sortable.create(this.currentSetlistSongsContainer, {
+                animation: 150,
+                handle: '.drag-handle',
+                ghostClass: 'drag-ghost',
+                delay: 0,
+                touchStartThreshold: 2,
+                onEnd: (evt) => {
+                    const newOrder = Array.from(this.currentSetlistSongsContainer.querySelectorAll('.song-item')).map(item => item.dataset.id);
+                    SetlistsManager.updateSetlistSongs(this.currentSetlistId, newOrder);
+                    this.renderSetlistSongs();
+                }
+            });
+        },
+
+        openSetlistModal(mode = 'add') {
+            this.modalMode = mode;
+            if (mode === 'rename' && this.currentSetlistId) {
+                const setlist = SetlistsManager.getSetlistById(this.currentSetlistId);
+                this.setlistModalTitle.textContent = 'Rename Setlist';
+                this.setlistNameInput.value = setlist?.name || '';
+            } else {
+                this.setlistModalTitle.textContent = 'New Setlist';
+                this.setlistNameInput.value = '';
+            }
+            this.setlistModal.style.display = 'block';
+            this.setlistNameInput.focus();
+        },
+
+        closeSetlistModal() {
+            this.setlistModal.style.display = 'none';
+            this.modalMode = null;
+        },
+
+        saveSetlist() {
+            const name = this.setlistNameInput.value.trim();
+            if (!name) {
+                showToast('Please enter a setlist name', 'error');
+                return;
+            }
+
+            try {
+                if (this.modalMode === 'rename' && this.currentSetlistId) {
+                    SetlistsManager.renameSetlist(this.currentSetlistId, name);
+                } else {
+                    const setlist = SetlistsManager.addSetlist(name, []);
+                    this.currentSetlistId = setlist.id;
+                }
+            } catch (err) {
+                showToast(err.message || 'Could not save setlist.', 'error');
+                return;
+            }
+            this.renderSetlists();
+            this.closeSetlistModal();
+        },
+
+        handleDuplicateSetlist() {
+            if (!this.currentSetlistId) return;
+            const newSetlist = SetlistsManager.duplicateSetlist(this.currentSetlistId);
+            if (newSetlist) {
+                this.currentSetlistId = newSetlist.id;
+                this.renderSetlists();
+            }
+        },
+
+        handleDeleteSetlist() {
+            if (!this.currentSetlistId) return;
+            confirmDialog('Delete this setlist?', () => {
+                SetlistsManager.deleteSetlist(this.currentSetlistId);
+                this.currentSetlistId = null;
+                this.renderSetlists();
+                showToast('Deleted setlist.', 'success');
+            });
+        },
+
+        handleSetlistSelectChange(e) {
+            this.currentSetlistId = e.target.value || null;
+            this.renderSetlistSongs();
+        },
+
+        handleAvailableSongsClick(e) {
+            if (!e.target.closest('.add-to-setlist-btn')) return;
+            const songItem = e.target.closest('.song-item');
+            if (!songItem || !this.currentSetlistId) return;
+            const id = songItem.dataset.id;
+            SetlistsManager.addSongToSetlist(this.currentSetlistId, id);
+            this.renderSetlistSongs();
+        },
+
+        handleCurrentSetlistSongsClick(e) {
+            const songItem = e.target.closest('.song-item');
+            if (!songItem || !this.currentSetlistId) return;
+            const id = songItem.dataset.id;
+            if (e.target.closest('.remove-from-setlist-btn')) {
+                SetlistsManager.removeSongFromSetlist(this.currentSetlistId, id);
+                this.renderSetlistSongs();
+            } else if (e.target.closest('.move-up-btn')) {
+                SetlistsManager.moveSongInSetlist(this.currentSetlistId, id, -1);
+                this.renderSetlistSongs();
+            } else if (e.target.closest('.move-down-btn')) {
+                SetlistsManager.moveSongInSetlist(this.currentSetlistId, id, 1);
+                this.renderSetlistSongs();
+            }
+        },
+
+        // Performance Mode
+        renderPerformanceTab() {
+            this.renderSetlists();
+            this.handlePerformanceSetlistChange();
+        },
+
+        handlePerformanceSetlistChange() {
+            this.performanceSetlistId = this.performanceSetlistSelect.value || null;
+            this.renderPerformanceSongList();
+        },
+
+        handlePerformanceSongSearch() {
+            this.renderPerformanceSongList();
+        },
+
+        renderPerformanceSongList() {
+            let songs = [];
+            const query = (this.performanceSongSearch?.value || '').trim();
+
+            if (this.performanceSetlistId) {
+                const setlist = SetlistsManager.getSetlistById(this.performanceSetlistId);
+                if (setlist) {
+                    songs = setlist.songs.map(id => this.songs.find(s => s.id === id)).filter(Boolean);
+                }
+            } else {
+                songs = this.songs.slice();
+            }
+
+            if (query) {
+                try {
+                    const fuse = new Fuse(songs, {
+                        keys: [
+                            { name: 'title', weight: 0.85 },
+                            { name: 'lyrics', weight: 0.15 }
+                        ],
+                        includeScore: true,
+                        threshold: 0.35,
+                        ignoreLocation: true,
+                        minMatchCharLength: 2,
+                    });
+                    songs = fuse.search(query).map(r => r.item);
+                } catch (e) {
+                    const low = query.toLowerCase();
+                    songs = songs.filter(song =>
+                        song.title.toLowerCase().includes(low) ||
+                        (song.lyrics && song.lyrics.toLowerCase().includes(low))
+                    );
+                }
+            }
+
+            // When showing "All Songs", present the list alphabetically by title if no query
+            if (!this.performanceSetlistId && !query) {
+                songs.sort((a, b) => a.title.localeCompare(b.title));
+            }
+
+            this.performanceSongList.innerHTML = songs.map(song => `
+                <div class="song-item" data-id="${song.id}">
+                    <span>${song.title}</span>
+                    <button class="btn primary perform-song-btn" title="Perform This Song"><i class="fas fa-play"></i></button>
+                </div>
+            `).join('');
+        },
+
+        handlePerformanceSongClick(e) {
+            if (!e.target.closest('.perform-song-btn')) return;
+            const songItem = e.target.closest('.song-item');
+            if (!songItem) return;
+            const songId = songItem.dataset.id;
+            this.startPerformanceWithSong(songId);
+        },
+
+        handleStartPerformance() {
+            if (this.performanceSetlistId) {
+                const setlist = SetlistsManager.getSetlistById(this.performanceSetlistId);
+                if (setlist && setlist.songs.length > 0) {
+                    this.startPerformanceWithSong(setlist.songs[0]);
+                } else {
+                    showToast('No songs in selected setlist', 'info');
+                }
+            } else {
+                if (this.songs.length > 0) {
+                    const firstId = this.songs
+                        .slice()
+                        .sort((a, b) => a.title.localeCompare(b.title))[0].id;
+                    this.startPerformanceWithSong(firstId);
+                } else {
+                    showToast('No songs available', 'info');
+                }
+            }
+        },
+
+        startPerformanceWithSong(songId) {
+            const params = new URLSearchParams();
+            if (this.performanceSetlistId) {
+                params.set('setlistId', this.performanceSetlistId);
+                // Include a fallback list of IDs for local file environments
+                const setlist = SetlistsManager.getSetlistById(this.performanceSetlistId);
+                if (setlist && Array.isArray(setlist.songs) && setlist.songs.length) {
+                    // Compact encode: comma-separated IDs
+                    try { params.set('ids', setlist.songs.join(',')); } catch (_) {}
+                }
+            }
+            params.set('songId', songId);
+            window.location.href = `performance/performance.html?${params.toString()}`;
+        },
+
+ // Helper for downloading a file
+        downloadFile(filename, content, mime = "text/plain") {
+            const blob = new Blob([content], { type: mime });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(() => {
+                URL.revokeObjectURL(link.href);
+                document.body.removeChild(link);
+            }, 150);
         }
-        // Join with newlines; keep a trailing newline for readability
-        let content = parts.join('\n');
+    };
 
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `lyricsmith-library-${new Date().toISOString().split('T')[0]}.txt`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    app.init();
 
-        ClipboardManager.showToast(`Exported ${this.songs.length} songs to TXT`, 'success');
-      } catch (err) {
-        console.error('TXT export failed:', err);
-        ClipboardManager.showToast('TXT export failed', 'error');
-      }
-    },
-
-    async importLibrary(file) {
-      try {
-        showGlobalBusy('Importing library…');
-        const text = await file.text();
-        let data;
-        try { data = JSON.parse(text); } catch (e) { throw new Error('Invalid JSON'); }
-
-        // Normalize several possible formats into an array of songs:
-        // 1) Hill Rd. Song Manager export: { version, exportDate, songCount, songs: [...] }
-        // 2) Hill Rd Setlist full export: { songs: [...], setlists: [...] }
-        // 3) Hill Rd Setlist songs export: [ {title, lyrics, id?}, ... ]
-        // 4) Hill Rd Setlist setlists export: { setlist, songs: [...] } or [ { setlist, songs }, ... ]
-        let songsToImport = [];
-        if (Array.isArray(data)) {
-          // Could be an array of songs or array of { setlist, songs }
-          if (data.length && typeof data[0] === 'object' && data[0] && 'setlist' in data[0] && 'songs' in data[0]) {
-            for (const entry of data) { if (entry && Array.isArray(entry.songs)) songsToImport.push(...entry.songs); }
-          } else {
-            songsToImport = data;
-          }
-        } else if (data && typeof data === 'object') {
-          if (Array.isArray(data.songs)) {
-            songsToImport = data.songs;
-          } else if (data.setlist && Array.isArray(data.songs)) {
-            songsToImport = data.songs;
-          }
-        }
-
-        if (!Array.isArray(songsToImport)) songsToImport = [];
-        // Filter to objects that at least have a title or lyrics
-        songsToImport = songsToImport.filter(s => s && (s.title || s.lyrics));
-        if (!songsToImport.length) throw new Error('Invalid library format');
-
-        // Confirm import and optionally handle duplicates by title
-        const confirmMsg = `Import ${songsToImport.length} songs? This will add to your existing library.`;
-        if (!confirm(confirmMsg)) return;
-        const norm = (t)=> String(t||'').trim().toLowerCase();
-        const existingTitles = new Set(this.songs.map(s=> norm(s.title)));
-        const dupCount = songsToImport.reduce((n,s)=> n + (existingTitles.has(norm(s.title)) ? 1 : 0), 0);
-        let skipDup = false;
-        if (dupCount > 0) {
-          skipDup = confirm(`${dupCount} duplicate title(s) detected. Click OK to skip duplicates, or Cancel to import copies.`);
-        }
-        const ensureUniqueTitle = (title)=>{
-          let base = String(title||'Untitled');
-          if (skipDup) return base; // Won't be used for duplicates
-          let cand = base, n = 1;
-          while (existingTitles.has(norm(cand))) { n++; cand = `${base} (Copy ${n})`; }
-          existingTitles.add(norm(cand));
-          return cand;
-        };
-
-        // Process and migrate imported songs
-        let importCount = 0;
-        for (const songData of songsToImport) {
-          if (skipDup && existingTitles.has(norm(songData.title))) {
-            continue;
-          }
-          const song = this.migrateSongFormat(songData);
-          if (!skipDup) song.title = ensureUniqueTitle(song.title);
-          // Generate new ID to avoid conflicts
-          song.id = Date.now().toString() + Math.random().toString(36).slice(2, 11);
-          song.lastEditedAt = new Date().toISOString();
-          this.songs.push(song);
-          importCount++;
-        }
-
-        this.saveSongs();
-        this.renderSongs();
-        ClipboardManager.showToast(`Imported ${importCount} songs`, 'success');
-      } catch (err) {
-        console.error('Import failed:', err);
-        ClipboardManager.showToast('Import failed - invalid file format', 'error');
-      } finally {
-        hideGlobalBusy();
-      }
-    },
-
-    normalizeLibrary() {
-      try {
-        let idFixes = 0;
-        let normalized = 0;
-        // Ensure unique IDs
-        const beforeIds = new Set(this.songs.map(s => String(s.id || '')));
-        if (this.ensureUniqueIds()) {
-          const afterIds = new Set(this.songs.map(s => String(s.id)));
-          idFixes = Math.max(0, beforeIds.size - afterIds.size);
-        }
-
-        // Normalize song fields using migrateSongFormat
-        this.songs = this.songs.map((song) => {
-          const migrated = this.migrateSongFormat(song);
-          // Keep original timestamps if present
-          migrated.createdAt = song.createdAt || migrated.createdAt;
-          migrated.lastEditedAt = song.lastEditedAt || migrated.lastEditedAt;
-          if (JSON.stringify(song) != JSON.stringify(migrated)) normalized++;
-          return migrated;
-        });
-
-        this.saveSongs();
-        const msg = `Library normalized${idFixes ? `, fixed IDs: ${idFixes}` : ''}${normalized ? `, updated: ${normalized}` : ''}`;
-        ClipboardManager.showToast(msg, 'success');
-        const query = document.getElementById('song-search-input')?.value || '';
-        this.renderSongs(query);
-      } catch (e) {
-        console.error('Normalize failed', e);
-        ClipboardManager.showToast('Normalize failed', 'error');
-      }
-    },
-
-    confirmDeleteAll() {
-      if (confirm("Delete all songs? This cannot be undone.")) {
-        this.songs = [];
-        this.saveSongs();
-        this.renderSongs();
-        ClipboardManager.showToast('All songs deleted', 'info');
-      }
-    },
-
-    bindEvents() {
-      // Add keyboard shortcuts
-      document.addEventListener('keydown', (e) => {
-        // Ctrl/Cmd + N for new song
-        if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
-          e.preventDefault();
-          this.createNewSong();
-        }
-        
-        // Ctrl/Cmd + E for export
-        if ((e.ctrlKey || e.metaKey) && e.key === 'e') {
-          e.preventDefault();
-          this.openExportModal?.();
-        }
-      });
-
-      // Focus search on '/' key
-      document.addEventListener('keydown', (e) => {
-        if (e.key === '/' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-          e.preventDefault();
-          document.getElementById('song-search-input')?.focus();
-        }
-      });
-    }
-    ,
-
-    setupExportModal() {
-      const overlay = document.getElementById('export-modal-overlay');
-      if (!overlay) return;
-      // Close with top-right X
-      overlay.querySelector('.modal-close-x')?.addEventListener('click', () => { overlay.hidden = true; });
-      const formatRadios = Array.from(document.querySelectorAll('input[name="export-format"]'));
-      const jsonOptions = document.getElementById('json-options');
-      const txtOptions = document.getElementById('txt-options');
-      const cancelBtn = document.getElementById('export-cancel-btn');
-      const confirmBtn = document.getElementById('export-confirm-btn');
-
-      const updateOptions = () => {
-        const fmt = (formatRadios.find(r => r.checked)?.value) || 'json';
-        if (fmt === 'txt') {
-          if (jsonOptions) jsonOptions.style.display = 'none';
-          if (txtOptions) txtOptions.style.display = '';
+    function finishImportSetlist(name, text) {
+        const result = SetlistsManager.importSetlistFromText(name, text, app.songs);
+        if (result) {
+            app.currentSetlistId = result.setlist.id;
+            app.renderSetlists();
+            const skipped = result.notFound.length;
+            showToast(`Imported ${result.imported} songs${skipped ? ` (${skipped} not found)` : ''}.`, skipped ? 'info' : 'success');
         } else {
-          if (jsonOptions) jsonOptions.style.display = '';
-          if (txtOptions) txtOptions.style.display = 'none';
+            showToast('Import failed.', 'error');
         }
-      };
-
-      formatRadios.forEach(r => r.addEventListener('change', updateOptions));
-      cancelBtn?.addEventListener('click', () => { overlay.hidden = true; });
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.hidden = true; });
-
-      confirmBtn?.addEventListener('click', async () => {
-        confirmBtn.classList.add('loading');
-        try {
-          const fmt = (formatRadios.find(r => r.checked)?.value) || 'json';
-          if (fmt === 'txt') {
-            const includeChords = !!document.getElementById('export-include-chords')?.checked;
-            await this.exportLibraryTxt(includeChords);
-          } else {
-            const includeMetadata = !!document.getElementById('export-include-metadata')?.checked;
-            await this.exportLibrary(includeMetadata);
-          }
-          overlay.hidden = true;
-        } finally {
-          confirmBtn.classList.remove('loading');
-        }
-      });
-
-      this.openExportModal = () => {
-        try {
-          const jsonRadio = document.querySelector('input[name="export-format"][value="json"]');
-          if (jsonRadio) jsonRadio.checked = true;
-          const incMeta = document.getElementById('export-include-metadata');
-          if (incMeta) incMeta.checked = true;
-          const incChords = document.getElementById('export-include-chords');
-          if (incChords) incChords.checked = false;
-          updateOptions();
-        } catch {}
-        overlay.hidden = false;
-      };
     }
-  };
-
-  app.init();
-  attachHookMillButton();
-  window.app = app;
-
-  // Extend app with Hook Mill sync routine
-  app.syncHookMill = async function(starredOnly = true) {
-    try {
-      ClipboardManager.showToast(starredOnly ? 'Syncing starred Hook Mill items…' : 'Syncing Hook Mill items…', 'info');
-      showGlobalBusy('Syncing Hook Mill…');
-      const items = await getHookMillItems();
-      if (!items.length) {
-        ClipboardManager.showToast('No Hook Mill items found', 'info');
-        return;
-      }
-
-      const filtered = starredOnly ? items.filter(x => x && x.starred) : items;
-      if (!filtered.length) {
-        ClipboardManager.showToast(starredOnly ? 'No starred Hook Mill items' : 'No Hook Mill items', 'info');
-        return;
-      }
-
-      // Build a quick index of existing hm hashes in notes for dedupe
-      const existingHashes = new Set();
-      try {
-        for (const s of this.songs) {
-          const note = (s.notes || '').toString();
-          const m = note.match(/hm_hash:([a-f0-9]{32,64})/i);
-          if (m) existingHashes.add(m[1].toLowerCase());
-        }
-      } catch {}
-
-      let imported = 0;
-      let skipped = 0;
-      for (const it of filtered) {
-        const output = (it && it.output) ? String(it.output) : '';
-        if (!output.trim()) { skipped++; continue; }
-        const hash = (it.hash || '').toString().toLowerCase();
-        if (hash && existingHashes.has(hash)) { skipped++; continue; }
-
-        // Title = first non-empty line, trimmed
-        const firstLine = output.split(/\r?\n/).find(l => l.trim()) || 'Hook';
-        const title = firstLine.slice(0, 120);
-
-        const newSong = this.createSong(title, output, '');
-        // Tag and note metadata
-        const tags = new Set([...(newSong.tags || []), 'hook-mill']);
-        if (Array.isArray(it.tags)) it.tags.forEach(t => t && tags.add(String(t)));
-        newSong.tags = Array.from(tags);
-        const created = it.createdAt ? new Date(it.createdAt).toISOString() : new Date().toISOString();
-        const metaBits = [
-          `Imported from Hook Mill on ${new Date().toLocaleString()}`,
-          it.model ? `model: ${it.model}` : '',
-          it.preset ? `preset: ${it.preset}` : '',
-          it.lens ? `lens: ${it.lens}` : '',
-          hash ? `hm_hash:${hash}` : ''
-        ].filter(Boolean);
-        newSong.notes = metaBits.join(' \n ');
-        newSong.createdAt = created;
-        newSong.lastEditedAt = new Date().toISOString();
-
-        this.songs.push(newSong);
-        if (hash) existingHashes.add(hash);
-        imported++;
-      }
-
-      if (imported > 0) {
-        this.saveSongs();
-        const query = document.getElementById('song-search-input')?.value || '';
-        this.renderSongs(query);
-      }
-
-      const msg = `Hook Mill sync: imported ${imported}${skipped ? `, skipped ${skipped}` : ''}`;
-      ClipboardManager.showToast(msg, imported ? 'success' : 'info');
-    } catch (err) {
-      console.error('Hook Mill sync failed', err);
-      ClipboardManager.showToast('Hook Mill sync failed', 'error');
-    } finally {
-      hideGlobalBusy();
-    }
-  };
 });
-  // Global: close modals when clicking overlay or pressing ESC
-  (function attachGlobalModalHandlers(){
-    function onOverlayClick(e){ if (e.target.classList && e.target.classList.contains('modal-overlay')) e.target.hidden = true; }
-    document.addEventListener('click', onOverlayClick);
-    document.addEventListener('keydown', (e)=>{
-      if (e.key === 'Escape') {
-        document.querySelectorAll('.modal-overlay').forEach(ov => ov.hidden = true);
-      }
-    });
-    // Close buttons with data-close attr
-    document.addEventListener('click', (e)=>{
-      const closeId = e.target?.closest('[data-close]')?.getAttribute('data-close');
-      if (closeId) { const ov = document.getElementById(closeId); if (ov) ov.hidden = true; }
-    });
-  })();

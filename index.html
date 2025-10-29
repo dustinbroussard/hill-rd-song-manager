@@ -23,6 +23,7 @@
     <link rel="manifest" href="manifest.webmanifest">
     <meta name="theme-color" content="#000000" id="theme-color">
     <link rel="icon" href="assets/icons/icon-192x192.png">
+    <link rel="apple-touch-icon" href="assets/icons/icon-192x192.png">
     <!-- Use a single up-to-date Font Awesome version -->
     <link href="lib/fontawesome/css/all.min.css" rel="stylesheet">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -212,7 +213,7 @@
           navigator.serviceWorker.register('sw.js').then(reg => {
             reg.addEventListener('updatefound', () => {
               const newWorker = reg.installing;
-              newWorker.addEventListener('statechange', () => {
+              newWorker?.addEventListener('statechange', () => {
                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
                   let container = document.querySelector('.toast-container');
                   if (!container) {
@@ -239,9 +240,10 @@
                 }
               });
             });
-            navigator.serviceWorker.addEventListener('controllerchange', () => {
-              // New service worker has taken control
-            });
+            // no-op, useful hook if we want to react to new SW activation
+            navigator.serviceWorker.addEventListener('controllerchange', () => {});
+          }).catch(() => {
+            // ignore SW registration failures; app still works online
           });
         }
     </script>

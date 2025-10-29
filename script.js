@@ -124,8 +124,121 @@ document.addEventListener('DOMContentLoaded', () => {
       overlay.hidden = true;
     } catch {}
   }
+
+  // === PWA INSTALL PROMPT ===
+  function attachInstallPromptHandlers() {
+    const sessionKey = 'pwaInstallDecision'; // 'accepted' | 'dismissed'
+    const installedFlag = 'pwaInstalled';
+    const isStandalone = () => {
+      try {
+        return (
+          (window.matchMedia && (window.matchMedia('(display-mode: standalone)').matches ||
+          window.matchMedia('(display-mode: window-controls-overlay)').matches)) ||
+          (navigator.standalone === true)
+        );
+      } catch { return false; }
+    };
+
+    if (isStandalone()) {
+      try { localStorage.setItem(installedFlag, '1'); } catch {}
+    }
+
+    let deferredPrompt = null;
+
+    function ensureToastContainer() {
+      let container = document.querySelector('.toast-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+      }
+      return container;
+    }
+
+    function showInstallToast() {
+      if (sessionStorage.getItem(sessionKey)) return;
+      if (isStandalone() || localStorage.getItem(installedFlag) === '1') return;
+      if (!deferredPrompt) return; // wait until browser says we can prompt
+      // Optional frequency control: set localStorage('pwaPromptFrequency') to 'daily' or 'weekly'
+      try {
+        const freq = (localStorage.getItem('pwaPromptFrequency') || 'session').toLowerCase();
+        const nextAt = parseInt(localStorage.getItem('pwaPromptNextTime') || '0', 10) || 0;
+        const now = Date.now();
+        if (nextAt && now < nextAt) return;
+        let next = 0;
+        if (freq === 'daily') next = now + 24*60*60*1000;
+        else if (freq === 'weekly') next = now + 7*24*60*60*1000;
+        if (next > 0) localStorage.setItem('pwaPromptNextTime', String(next));
+      } catch {}
+
+      const container = ensureToastContainer();
+      const toast = document.createElement('div');
+      toast.className = 'toast toast-info toast-sticky';
+      const msg = document.createElement('div');
+      msg.className = 'toast-content';
+      msg.textContent = 'Install Hill Rd. Song Manager?';
+      const actions = document.createElement('div');
+      actions.style.display = 'flex';
+      actions.style.gap = '0.5rem';
+      actions.style.marginTop = '0.25rem';
+      const installBtn = document.createElement('button');
+      installBtn.className = 'btn';
+      installBtn.textContent = 'Install';
+      const laterBtn = document.createElement('button');
+      laterBtn.className = 'btn';
+      laterBtn.textContent = 'Not now';
+      actions.appendChild(installBtn);
+      actions.appendChild(laterBtn);
+      toast.appendChild(msg);
+      toast.appendChild(actions);
+
+      const close = () => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+      };
+      laterBtn.addEventListener('click', () => {
+        sessionStorage.setItem(sessionKey, 'dismissed');
+        close();
+      });
+      installBtn.addEventListener('click', async () => {
+        try {
+          const dp = deferredPrompt;
+          if (!dp) return;
+          dp.prompt();
+          const choice = await dp.userChoice;
+          if (choice && choice.outcome === 'accepted') {
+            sessionStorage.setItem(sessionKey, 'accepted');
+            try { ClipboardManager.showToast('Thanks for installing!', 'success'); } catch {}
+          } else {
+            sessionStorage.setItem(sessionKey, 'dismissed');
+          }
+        } finally {
+          deferredPrompt = null; // Chrome requires one-use
+          close();
+        }
+      });
+
+      container.appendChild(toast);
+      setTimeout(() => toast.classList.add('show'), 10);
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      window.__deferredPwaPrompt = e;
+      showInstallToast();
+    });
+
+    window.addEventListener('appinstalled', () => {
+      try { localStorage.setItem(installedFlag, '1'); } catch {}
+      sessionStorage.setItem(sessionKey, 'accepted');
+      try { ClipboardManager.showToast('App installed!', 'success'); } catch {}
+    });
+  }
+
   attachThemeToggle();
   attachSettingsMenu();
+  attachInstallPromptHandlers();
 
   // === HOOK MILL INTEGRATION ===
   function attachHookMillButton() {

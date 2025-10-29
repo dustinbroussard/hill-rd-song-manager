@@ -1,8 +1,9 @@
-const CACHE_NAME = 'lyricsmith-v7';
+const CACHE_NAME = 'lyricsmith-v8';
 const APP_SHELL = [
     './',
     'index.html',
     'style.css',
+    'themes.css',
     'config.js',
     'script.js',
     'hook-mill/index.html',
@@ -19,7 +20,10 @@ const APP_SHELL = [
     'assets/icons/icon-512x512.png',
     'assets/images/mylogo.png',
     'lib/mammoth.browser.min.js',
-    'lib/sortable.min.js'
+    'lib/sortable.min.js',
+    'lib/fuse.js',
+    'lib/storage.js',
+    'lib/fontawesome/css/all.min.css'
 ];
 
 self.addEventListener('install', event => {

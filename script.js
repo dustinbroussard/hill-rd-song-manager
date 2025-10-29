@@ -1551,10 +1551,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!Array.isArray(this.songs) || this.songs.length === 0) {
                 this.songList.innerHTML = `
                     <div class="empty-message">
-                      <p>Upload songs (<code>.txt</code>, <code>.docx</code>) to get started.</p>
-                      <button id="upload-hint-btn" class="btn primary">
-                        <i class="fas fa-upload"></i> Upload Songs
-                      </button>
+                      <p>Add your first song to get started.</p>
+                      <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center;">
+                        <button id="new-song-btn" class="btn primary"><i class="fas fa-plus"></i> New Song</button>
+                        <button id="upload-hint-btn" class="btn"><i class="fas fa-upload"></i> Upload Songs (.txt, .docx)</button>
+                      </div>
                     </div>
                 `;
                 // Wire the hint button to the hidden file input
@@ -1562,6 +1563,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (hintBtn) {
                     hintBtn.addEventListener('click', () => {
                         document.getElementById('song-upload-input')?.click();
+                    });
+                }
+                const newBtn = document.getElementById('new-song-btn');
+                if (newBtn) {
+                    newBtn.addEventListener('click', async () => {
+                        try {
+                            const id = Date.now().toString() + Math.random().toString(16).slice(2);
+                            const song = { id, title: 'New Song', lyrics: '' };
+                            await DB.putSong(song);
+                            this.songs = await DB.getAllSongs();
+                            window.location.href = `editor/editor.html?songId=${encodeURIComponent(id)}`;
+                        } catch (e) { console.error('Failed to create new song', e); }
                     });
                 }
                 return;

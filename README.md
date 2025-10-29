@@ -1,4 +1,4 @@
-# Hill Rd. Setlist Manager
+# Hill Rd. Song Manager
 
 A **modern, touch-friendly web app** for musicians to manage setlists and lyrics with zero clutter and maximum clarity. Designed for live band rehearsals, gigging, and on-stage performance. Fast, offline-first, and fully mobile/tablet-friendly.
 

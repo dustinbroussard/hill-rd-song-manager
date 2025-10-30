@@ -613,6 +613,8 @@ img, video, iframe {
     border: 1px solid var(--border-light); /* Lighter border for song items */
     box-shadow: var(--shadow-sm);
     transition: background-color var(--transition-speed), border-color var(--transition-speed), box-shadow var(--transition-speed);
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 .song-item:hover {
@@ -806,6 +808,15 @@ img, video, iframe {
 .modal-actions .btn {
     flex: 1 1 auto;
     margin: 0;
+}
+
+/* Stack buttons vertically in the Edit Options modal */
+.edit-options-modal .modal-actions {
+    flex-direction: column;
+    align-items: stretch;
+}
+.edit-options-modal .modal-actions .btn {
+    width: 100%;
 }
 
 /* Add these styles to your existing CSS */

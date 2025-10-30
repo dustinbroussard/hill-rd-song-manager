@@ -936,9 +936,10 @@ document.addEventListener('DOMContentLoaded', () => {
             modal.className = 'modal';
             modal.style.display = 'flex';
             modal.innerHTML = `
-              <div class="modal-content">
+              <div class="modal-content edit-options-modal">
                 <h2>Edit Options</h2>
-                <div class="modal-actions">
+                <div class="modal-actions edit-options-actions">
+                  <button class="btn" id="copy-song">Copy Title + Lyrics</button>
                   <button class="btn" id="edit-quick">Quick Edit</button>
                   <button class="btn primary" id="edit-full">Full Editor</button>
                   <button class="btn" id="edit-cancel">Cancel</button>
@@ -947,6 +948,29 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.appendChild(modal);
             const close = ()=> modal.remove();
             modal.addEventListener('click', (e)=> { if (e.target === modal) close(); });
+            // Copy button handler
+            const copyBtn = modal.querySelector('#copy-song');
+            if (copyBtn) {
+                copyBtn.onclick = async () => {
+                    try {
+                        const song = this.getLyricById(id);
+                        if (!song) { close(); return; }
+                        const text = `${song.title || ''}\n\n${song.lyrics || ''}`;
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(text);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = text; ta.style.position='fixed'; ta.style.left='-9999px';
+                            document.body.appendChild(ta); ta.focus(); ta.select();
+                            document.execCommand('copy'); ta.remove();
+                        }
+                        showToast('Copied song (title + lyrics).', 'success');
+                    } catch (err) {
+                        console.error('Copy failed', err);
+                        showToast('Copy failed.', 'error');
+                    } finally { close(); }
+                };
+            }
             modal.querySelector('#edit-quick').onclick = () => { close(); this.openSongModal(id); };
             modal.querySelector('#edit-full').onclick = () => { close(); window.location.href = `editor/editor.html?songId=${encodeURIComponent(id)}`; };
             modal.querySelector('#edit-cancel').onclick = () => close();
@@ -1692,6 +1716,11 @@ document.addEventListener('DOMContentLoaded', () => {
             let moved = false;
             const onTouchStart = (e) => {
                 const item = e.currentTarget; // bound element
+                // Ignore long-press if starting on action buttons/icons
+                const target = e.target;
+                if (target && (target.closest('.song-actions') || target.closest('.btn'))) {
+                    return;
+                }
                 pressTargetId = item.dataset.id;
                 moved = false;
                 clearTimeout(pressTimer);

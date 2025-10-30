@@ -491,6 +491,76 @@ img, video, iframe {
     box-shadow: var(--shadow-sm); /* Adding a subtle shadow to buttons */
 }
 
+/* Search group: mic + input + sort inside one bar */
+.search-group {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+}
+
+.search-group .search-input {
+  width: 100%;
+  padding-left: 2.3rem;  /* room for mic */
+  padding-right: 9.5rem; /* room for sort select */
+  border-top-right-radius: 10px; /* keep rounded */
+  border-bottom-right-radius: 10px;
+}
+
+/* Variant with no sort dropdown (performance search) */
+.search-group.no-sort .search-input {
+  padding-right: 2.4rem; /* only reserve room for mic */
+}
+
+.search-group .search-icon-btn {
+  position: absolute;
+  left: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.05rem;
+  padding: 0;
+}
+.search-group .search-icon-btn:hover,
+.search-group .search-icon-btn:focus { color: var(--accent-primary); }
+
+.song-sort-select.inside {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 6.8em; /* more compact */
+  max-width: 10.5em;
+  width: auto;
+  padding: 0.28rem 0.5rem;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-left: none; /* visually attached to input */
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-top-right-radius: var(--border-radius-base);
+  border-bottom-right-radius: var(--border-radius-base);
+  font-size: 0.88rem;
+}
+
+@media (max-width: 600px) {
+  .search-group .search-input {
+    padding-left: 2.2rem;
+    padding-right: 7.6rem;
+  }
+  .song-sort-select.inside {
+    min-width: 6.6em;
+    font-size: 0.84rem;
+  }
+  .search-group .search-icon-btn {
+    font-size: 1rem;
+  }
+}
+
 
 .btn:hover {
     background-color: var(--accent-hover);

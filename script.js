@@ -496,18 +496,28 @@ document.addEventListener('DOMContentLoaded', () => {
         performanceSongSearch: document.getElementById('performance-song-search'),
         startPerformanceBtn: document.getElementById('start-performance-btn'),
         performanceSongList: document.getElementById('performance-song-list'),
+        // Preferences
+        sortMode: localStorage.getItem('songSortMode') || 'alpha-asc',
 
         // Tab Toolbars
         tabToolbars: {
             songs: `
-                <input type="text" id="song-search-input" class="search-input" placeholder="Search songs...">
-                <button id="song-voice-btn" class="icon-btn" title="Voice search"><i class="fas fa-microphone"></i></button>
+                <div class="search-group">
+                  <button id="song-voice-btn" class="search-icon-btn" title="Voice search" aria-label="Voice search"><i class="fas fa-microphone"></i></button>
+                  <input type="text" id="song-search-input" class="search-input" placeholder="Search songs..." aria-label="Search songs">
+                  <select id="song-sort-select" class="song-sort-select inside" title="Sort" aria-label="Sort songs">
+                      <option value="alpha-asc">A → Z</option>
+                      <option value="alpha-desc">Z → A</option>
+                      <option value="edited-desc">Newest</option>
+                      <option value="edited-asc">Oldest</option>
+                  </select>
+                </div>
                 <div class="toolbar-buttons-group">
                     <label for="song-upload-input" class="btn" title="Upload"><i class="fas fa-upload"></i></label>
                     <button id="delete-all-songs-btn" class="btn danger" title="Delete All"><i class="fas fa-trash"></i></button>
                     <button id="add-song-btn" class="btn" title="Add Song"><i class="fas fa-plus"></i></button>
                 </div>
-                <input type="file" id="song-upload-input" multiple accept=".txt,.docx" class="hidden-file">
+                <input type="file" id="song-upload-input" multiple accept=".txt,.docx,.json,.csv" class="hidden-file">
             `,
             setlists: `
                 <select id="setlist-select" class="setlist-select"></select>
@@ -525,8 +535,10 @@ document.addEventListener('DOMContentLoaded', () => {
             `,
             performance: `
                 <select id="performance-setlist-select" class="setlist-select"></select>
-                <input type="text" id="performance-song-search" class="search-input" placeholder="Find any song...">
-                <button id="performance-voice-btn" class="icon-btn" title="Voice search"><i class="fas fa-microphone"></i></button>
+                <div class="search-group no-sort">
+                  <button id="performance-voice-btn" class="search-icon-btn" title="Voice search" aria-label="Voice search"><i class="fas fa-microphone"></i></button>
+                  <input type="text" id="performance-song-search" class="search-input" placeholder="Find any song..." aria-label="Find any song">
+                </div>
                 <button id="start-performance-btn" class="btn primary"><i class="fas fa-play"></i> Start</button>
             `
         },
@@ -562,6 +574,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (tab === 'songs') {
                 this.songSearchInput = document.getElementById('song-search-input');
+                this.songSortSelect = document.getElementById('song-sort-select');
                 this.addSongBtn = document.getElementById('add-song-btn');
                 this.deleteAllSongsBtn = document.getElementById('delete-all-songs-btn');
                 this.songUploadInput = document.getElementById('song-upload-input');
@@ -569,6 +582,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.songSearchInput.addEventListener('input', () => this.renderSongs());
                 const songVoiceBtn = document.getElementById('song-voice-btn');
                 this.setupSpeechToText(this.songSearchInput, songVoiceBtn, () => this.renderSongs());
+                if (this.songSortSelect) {
+                    this.songSortSelect.value = this.sortMode;
+                    this.songSortSelect.addEventListener('change', () => {
+                        this.sortMode = this.songSortSelect.value;
+                        localStorage.setItem('songSortMode', this.sortMode);
+                        this.renderSongs();
+                    });
+                }
                 this.addSongBtn.addEventListener('click', () => this.openSongModal());
                 this.deleteAllSongsBtn.addEventListener('click', () => {
                     confirmDialog('Delete ALL songs? This cannot be undone!', async () => {
@@ -773,6 +794,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.setlistSelect && this.performanceSetlistSelect) {
                 this.renderSetlists();
             }
+            try {
+                if (!sessionStorage.getItem('songsLoadedToastShown')) {
+                    const count = Array.isArray(this.songs) ? this.songs.length : 0;
+                    showToast(`Loaded ${count} song(s).`, 'info', 2500);
+                    sessionStorage.setItem('songsLoadedToastShown', '1');
+                }
+            } catch {}
 
         },
 
@@ -933,7 +961,12 @@ document.addEventListener('DOMContentLoaded', () => {
             } else if (what === 'songs') {
                 options.innerHTML = '<label><input type="radio" name="export-format" value="json" checked> JSON (array)</label> <label><input type="radio" name="export-format" value="json-lyricsmith"> LyricSmith JSON</label> <label><input type="radio" name="export-format" value="csv"> CSV</label> <label><input type="radio" name="export-format" value="txt"> TXT (one file)</label> <label><input type="radio" name="export-format" value="txt-separate"> TXT (separate files)</label> <label><input type="radio" name="export-format" value="pdf"> PDF</label>';
             } else {
-                options.innerHTML = '<label><input type="radio" name="export-format" value="json" checked> JSON</label> <label><input type="radio" name="export-format" value="txt"> TXT list</label> <label><input type="radio" name="export-format" value="pdf"> PDF</label>';
+                options.innerHTML = [
+                  '<label><input type="radio" name="export-format" value="json" checked> JSON</label>',
+                  '<label><input type="radio" name="export-format" value="txt-list"> TXT (track list)</label>',
+                  '<label><input type="radio" name="export-format" value="txt-lyrics"> TXT (track list + lyrics)</label>',
+                  '<label><input type="radio" name="export-format" value="pdf"> PDF</label>'
+                ].join(' ');
             }
         },
 
@@ -941,21 +974,27 @@ document.addEventListener('DOMContentLoaded', () => {
             const what = (document.querySelector('input[name="export-what"]:checked')?.value)||'current';
             const format = (document.querySelector('input[name="export-format"]:checked')?.value)||'json';
             try {
+                let exportedSongsCount = 0;
                 if (what === 'everything') {
                     if (format === 'json-songs') {
                         const payload = { songs: this.songs };
+                        exportedSongsCount = this.songs.length;
                         this.downloadFile('lyricsmith-library.json', JSON.stringify(payload, null, 2), 'application/json');
                     } else {
                         const blob = this.exportEverything();
+                        exportedSongsCount = this.songs.length;
                         this.downloadFile('setlist-backup.json', blob, 'application/json');
                     }
                 } else if (what === 'songs') {
                     if (format === 'pdf') {
+                        exportedSongsCount = this.songs.length;
                         this.exportSongsPDF();
                     } else if (format === 'txt-separate') {
+                        exportedSongsCount = this.songs.length;
                         this.exportSongsAsSeparateTxt();
                     } else {
                         const { content, mime, ext } = this.exportSongs({ format });
+                        exportedSongsCount = this.songs.length;
                         this.downloadFile(`songs.${ext}`, content, mime);
                     }
                 } else {
@@ -964,9 +1003,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else {
                         const { content, mime, ext, name } = this.exportSetlists({ which: what, format });
                         this.downloadFile(`${name}.${ext}`, content, mime);
+                        if (what === 'current') {
+                            const sl = this.currentSetlistId ? SetlistsManager.getSetlistById(this.currentSetlistId) : null;
+                            exportedSongsCount = sl ? (sl.songs||[]).length : 0;
+                        } else {
+                            // all setlists export: count unique song ids across setlists
+                            const lists = SetlistsManager.getAllSetlists();
+                            const ids = new Set();
+                            for (const s of lists) (s.songs||[]).forEach(id => ids.add(id));
+                            exportedSongsCount = ids.size;
+                        }
                     }
                 }
-                showToast('Export ready.', 'success');
+                const countMsg = exportedSongsCount ? ` (${exportedSongsCount} song(s))` : '';
+                showToast(`Export ready${countMsg}.`, 'success');
                 const m = document.getElementById('export-modal'); if (m) m.style.display='none';
             } catch (e) {
                 console.error(e); showToast('Export failed.', 'error');
@@ -1115,9 +1165,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 const name = which === 'current' ? (current.name || 'setlist') : 'setlists';
                 return { content: JSON.stringify(data, null, 2), mime: 'application/json', ext: 'json', name: name.replace(/\s+/g,'_') };
             }
-            // txt list of titles
-            const content = setlists.map(sl=> `# ${sl.name}\n` + sl.songs.map(id=> (this.songs.find(s=> s.id===id)?.title)||'').filter(Boolean).join('\n')).join('\n\n');
             const name = which === 'current' ? (current.name || 'setlist') : 'setlists';
+            if (format === 'txt-list') {
+                // Just the track list (titles) per setlist
+                const content = setlists.map(sl=> `# ${sl.name}\n` + sl.songs.map(id=> (this.songs.find(s=> s.id===id)?.title)||'').filter(Boolean).join('\n')).join('\n\n');
+                return { content, mime: 'text/plain', ext: 'txt', name: name.replace(/\s+/g,'_') };
+            }
+            if (format === 'txt-lyrics') {
+                // Track list with lyrics combined
+                const sections = [];
+                for (const sl of setlists) {
+                    const lines = [`# ${sl.name}`];
+                    for (const id of sl.songs) {
+                        const s = this.songs.find(x=> x.id === id);
+                        if (!s) continue;
+                        lines.push(`${s.title}`);
+                        lines.push('');
+                        lines.push(String(s.lyrics || ''));
+                        lines.push('');
+                        lines.push('-----');
+                        lines.push('');
+                    }
+                    sections.push(lines.join('\n'));
+                }
+                const content = sections.join('\n');
+                return { content, mime: 'text/plain', ext: 'txt', name: name.replace(/\s+/g,'_') };
+            }
+            // Default: legacy text list (titles)
+            const content = setlists.map(sl=> `# ${sl.name}\n` + sl.songs.map(id=> (this.songs.find(s=> s.id===id)?.title)||'').filter(Boolean).join('\n')).join('\n\n');
             return { content, mime: 'text/plain', ext: 'txt', name: name.replace(/\s+/g,'_') };
         },
 
@@ -1374,13 +1449,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         this.renderSetlists();
                     }
                 } else {
+                    const before = this.songs.length;
                     const result = await this.restoreFromJSON(files[0]);
                     if (result) {
                         this.songs = await DB.getAllSongs();
                         await SetlistsManager.load();
                         this.renderSongs();
                         this.renderSetlists();
-                        showToast('Restore complete.', 'success');
+                        const after = this.songs.length;
+                        const delta = Math.max(0, after - before);
+                        showToast(`Restore complete (${delta} song(s) imported).`, 'success');
                     }
                 }
                 const m = document.getElementById('import-modal'); if (m) m.style.display='none';
@@ -1554,7 +1632,7 @@ document.addEventListener('DOMContentLoaded', () => {
                       <p>Add your first song to get started.</p>
                       <div style="display:flex; gap:0.5rem; flex-wrap:wrap; justify-content:center;">
                         <button id="new-song-btn" class="btn primary"><i class="fas fa-plus"></i> New Song</button>
-                        <button id="upload-hint-btn" class="btn"><i class="fas fa-upload"></i> Upload Songs (.txt, .docx)</button>
+                        <button id="upload-hint-btn" class="btn"><i class="fas fa-upload"></i> Upload Songs (.txt, .docx, .json, .csv)</button>
                       </div>
                     </div>
                 `;
@@ -1581,9 +1659,8 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const query = (this.songSearchInput?.value || '').trim();
-            const filteredSongs = !query
-                ? this.searchLyrics(query).sort((a, b) => a.title.localeCompare(b.title))
-                : this.searchLyrics(query); // Keep Fuse relevance order when searching
+            let filteredSongs = this.searchLyrics(query);
+            filteredSongs = this.applySongSort(filteredSongs);
             this.songList.innerHTML = filteredSongs.map(song => `
                 <div class="song-item" data-id="${song.id}">
                     <span>${song.title}</span>
@@ -1607,6 +1684,63 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.deleteSong(id);
                 });
             });
+
+            // Long-press to copy title + lyrics with section labels
+            const LONG_PRESS_MS = 650;
+            let pressTimer = null;
+            let pressTargetId = null;
+            let moved = false;
+            const onTouchStart = (e) => {
+                const item = e.currentTarget; // bound element
+                pressTargetId = item.dataset.id;
+                moved = false;
+                clearTimeout(pressTimer);
+                pressTimer = setTimeout(async () => {
+                    const song = this.getLyricById(pressTargetId);
+                    if (!song) return;
+                    const text = `${song.title || ''}\n\n${song.lyrics || ''}`;
+                    try {
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(text);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = text; ta.style.position='fixed'; ta.style.left='-9999px';
+                            document.body.appendChild(ta); ta.focus(); ta.select();
+                            document.execCommand('copy'); ta.remove();
+                        }
+                        showToast('Copied song (title + lyrics).', 'success');
+                    } catch { showToast('Copy failed.', 'error'); }
+                }, LONG_PRESS_MS);
+            };
+            const onTouchEnd = () => { clearTimeout(pressTimer); pressTargetId = null; };
+            const onTouchMove = () => { moved = true; clearTimeout(pressTimer); };
+            this.songList.querySelectorAll('.song-item').forEach(item => {
+                item.addEventListener('touchstart', onTouchStart, { passive: true });
+                item.addEventListener('touchend', onTouchEnd);
+                item.addEventListener('touchcancel', onTouchEnd);
+                item.addEventListener('touchmove', onTouchMove, { passive: true });
+            });
+        },
+
+        applySongSort(list) {
+            const arr = (list || []).slice();
+            const mode = this.sortMode || 'alpha-asc';
+            const byTitle = (a, b) => (a.title||'').localeCompare(b.title||'');
+            const getEdited = (s)=> {
+                const t = s.lastEditedAt || s.updatedAt || s.createdAt || 0;
+                const n = typeof t === 'string' ? Date.parse(t) : t;
+                return isNaN(n) ? 0 : n;
+            };
+            const byEditedDesc = (a, b) => getEdited(b) - getEdited(a);
+            const byEditedAsc = (a, b) => getEdited(a) - getEdited(b);
+            switch (mode) {
+                case 'alpha-desc': arr.sort((a,b)=> byTitle(b,a)); break;
+                case 'edited-desc': arr.sort(byEditedDesc); break;
+                case 'edited-asc': arr.sort(byEditedAsc); break;
+                case 'alpha-asc':
+                default: arr.sort(byTitle); break;
+            }
+            return arr;
         },
 
         openSongModal(id = null) {
@@ -1636,6 +1770,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const song = this.songs.find(s => s.id === this.currentSongId);
                 song.title = title;
                 song.lyrics = lyrics;
+                song.lastEditedAt = new Date().toISOString();
                 try { await DB.putSong(song); } catch (e) {}
             } else {
                 if (this.isDuplicateTitle(title)) {
@@ -1646,6 +1781,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     id: Date.now().toString(),
                     title,
                     lyrics,
+                    createdAt: new Date().toISOString(),
+                    lastEditedAt: new Date().toISOString(),
                 };
                 this.songs.push(newSong);
                 try { await DB.putSong(newSong); } catch (e) {}
@@ -1689,20 +1826,41 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const tasks = files.map(async (file) => {
                 try {
-                    const title = this.normalizeTitle(file.name);
-                    if (this.isDuplicateTitle(title)) { skipped++; return; }
-                    let lyrics = '';
-                    if (/\.docx$/i.test(file.name)) {
-                        const buf = await readAsArrayBuffer(file);
-                        const res = await mammoth.extractRawText({ arrayBuffer: buf });
-                        lyrics = String(res?.value || '');
+                    if (/\.json$/i.test(file.name)) {
+                        // Restore from backup JSON (songs + setlists)
+                        const before = this.songs.length;
+                        const ok = await this.restoreFromJSON(file);
+                        if (ok) {
+                            this.songs = await DB.getAllSongs();
+                            try { await SetlistsManager.load(); } catch {}
+                            try { this.renderSetlists(); } catch {}
+                            const after = this.songs.length;
+                            const delta = Math.max(0, after - before);
+                            imported += delta;
+                        } else {
+                            failed++;
+                        }
                     } else {
-                        lyrics = String(await readAsText(file));
+                        const title = this.normalizeTitle(file.name);
+                        if (this.isDuplicateTitle(title)) { skipped++; return; }
+                        let lyrics = '';
+                        if (/\.docx$/i.test(file.name)) {
+                            const buf = await readAsArrayBuffer(file);
+                            const res = await mammoth.extractRawText({ arrayBuffer: buf });
+                            lyrics = String(res?.value || '');
+                        } else if (/\.csv$/i.test(file.name)) {
+                            const text = await readAsText(file);
+                            const rows = this.parseCSV(text);
+                            for (let i=1;i<rows.length;i++){ const [Title, Lyrics] = rows[i]; if (!Title) continue; const s = { id: Date.now().toString()+Math.random().toString(16).slice(2), title: Title, lyrics: Lyrics||'' }; this.songs.push(s); try{ await DB.putSong(s); }catch{} imported++; }
+                            return;
+                        } else {
+                            lyrics = String(await readAsText(file));
+                        }
+                        const s = { id: Date.now().toString() + Math.random().toString(16).slice(2), title, lyrics };
+                        this.songs.push(s);
+                        try { await DB.putSong(s); } catch {}
+                        imported++;
                     }
-                    const s = { id: Date.now().toString() + Math.random().toString(16).slice(2), title, lyrics };
-                    this.songs.push(s);
-                    try { await DB.putSong(s); } catch {}
-                    imported++;
                 } catch (e) {
                     console.warn('Upload import failed for', file?.name, e);
                     failed++;
@@ -1717,7 +1875,7 @@ document.addEventListener('DOMContentLoaded', () => {
             event.target.value = '';
 
             const parts = [];
-            if (imported) parts.push(`${imported} imported`);
+            if (imported) parts.push(`${imported} song(s) imported`);
             if (skipped) parts.push(`${skipped} skipped (duplicates)`);
             if (failed) parts.push(`${failed} failed`);
             const msg = parts.length ? `Upload complete: ${parts.join(', ')}.` : 'No files were imported.';

@@ -103,6 +103,21 @@
     transition: color var(--transition-speed);
 }
 
+/* When showing chords, use monospace and preserve spaces; align left */
+.lyrics-container.show-chords {
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    text-align: left;
+}
+
+.lyrics-container .chord-line {
+    color: var(--accent-secondary, #9ad); /* subtle color for chords */
+}
+.lyrics-container .section-label {
+    font-weight: 600;
+    margin: 0.4em 0 0.2em;
+}
+
 .nav-arrow {
     position: absolute;
     top: 50%;

@@ -81,10 +81,27 @@ document.addEventListener('DOMContentLoaded', () => {
         fontFab: null,
         _fontOutsideHandler: null,
         _fontControlsTimer: null,
+        isChordsVisible: (localStorage.getItem('performanceShowChords') === '1'),
 
         // Initialize
         init() {
             (async () => {
+            // Keep screen awake and lock orientation where possible
+            try {
+                if ('wakeLock' in navigator) {
+                    let wl;
+                    const request = async () => {
+                        try { wl = await navigator.wakeLock.request('screen'); wl.addEventListener('release', ()=>{}); } catch {}
+                    };
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible') request();
+                    });
+                    request();
+                }
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(()=>{});
+                }
+            } catch {}
             // Run migration if needed (e.g., if opened directly)
             try {
               const migrated = await (async ()=>{ try{ const db=await idb.openDB('hrr-setlist-db',1); return db.get('meta','migrated'); } catch(_){ return true; } })();
@@ -160,32 +177,35 @@ document.addEventListener('DOMContentLoaded', () => {
             if (this.currentPerformanceSongIndex === -1) {
                 this.currentPerformanceSongIndex = 0;
             }
-            this.maybeResumeSetlist();
+            await this.maybeResumeSetlist();
         },
 
-        maybeResumeSetlist() {
+        async maybeResumeSetlist() {
             const lastPerfRaw = localStorage.getItem('lastPerformance');
             let lastPerf = null;
             if (lastPerfRaw) {
                 try { lastPerf = JSON.parse(lastPerfRaw); } catch (e) {}
             }
-            // Only prompt if we're entering the SAME setlist as before, and it wasn't at the beginning
-            if (
-                lastPerf &&
-                lastPerf.setlistId &&
-                lastPerf.setlistId === this.performanceSetlistId &&
-                typeof lastPerf.songIndex === "number" &&
-                lastPerf.songIndex > 0 &&
-                this.performanceSongs[lastPerf.songIndex]
-            ) {
-                confirmDialog(
-                  `Resume this setlist where we left off? (Song ${lastPerf.songIndex + 1}: ${this.performanceSongs[lastPerf.songIndex]?.title || 'Unknown'})`,
-                  () => { this.currentPerformanceSongIndex = lastPerf.songIndex; },
-                  () => { this.currentPerformanceSongIndex = 0; }
-                );
-            } else {
-                this.currentPerformanceSongIndex = 0;
-            }
+            return await new Promise((resolve) => {
+                // Only prompt if we're entering the SAME setlist as before, and it wasn't at the beginning
+                if (
+                    lastPerf &&
+                    lastPerf.setlistId &&
+                    lastPerf.setlistId === this.performanceSetlistId &&
+                    typeof lastPerf.songIndex === 'number' &&
+                    lastPerf.songIndex > 0 &&
+                    this.performanceSongs[lastPerf.songIndex]
+                ) {
+                    confirmDialog(
+                        `Resume this setlist where we left off? (Song ${lastPerf.songIndex + 1}: ${this.performanceSongs[lastPerf.songIndex]?.title || 'Unknown'})`,
+                        () => { this.currentPerformanceSongIndex = lastPerf.songIndex; resolve(); },
+                        () => { this.currentPerformanceSongIndex = 0; resolve(); }
+                    );
+                } else {
+                    this.currentPerformanceSongIndex = 0;
+                    resolve();
+                }
+            });
         },
 
         // Setup event listeners
@@ -214,6 +234,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.autoscrollDelayValue.textContent = this.autoscrollDelay + 's';
                 this.autoscrollSpeedSlider.value = this.autoScrollSpeed;
                 this.autoscrollSpeedValue.textContent = this.autoScrollSpeed;
+                const chordToggle = document.getElementById('show-chords-toggle');
+                if (chordToggle) chordToggle.checked = !!this.isChordsVisible;
             });
             this.autoscrollDelaySlider.addEventListener('input', (e) => {
                 this.autoscrollDelayValue.textContent = e.target.value + 's';
@@ -226,7 +248,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 localStorage.setItem('autoscrollDelay', this.autoscrollDelay);
                 this.autoScrollSpeed = Number(this.autoscrollSpeedSlider.value);
                 localStorage.setItem('autoscrollSpeed', this.autoScrollSpeed);
+                const chordToggle = document.getElementById('show-chords-toggle');
+                if (chordToggle) {
+                    this.isChordsVisible = chordToggle.checked;
+                    localStorage.setItem('performanceShowChords', this.isChordsVisible ? '1' : '0');
+                    this.displayCurrentPerformanceSong();
+                    if (this.isChordsVisible && !localStorage.getItem('chordsHintShown')) {
+                        try {
+                            showToast('Chords shown. Tip: adjust font size for best alignment.', 'info', 3500);
+                            localStorage.setItem('chordsHintShown', '1');
+                        } catch {}
+                    }
+                }
                 this.autoscrollDelayModal.style.display = 'none';
+            });
+            const chordToggle = document.getElementById('show-chords-toggle');
+            if (chordToggle) chordToggle.addEventListener('change', (e)=>{
+                this.isChordsVisible = !!e.target.checked;
+                localStorage.setItem('performanceShowChords', this.isChordsVisible ? '1' : '0');
+                this.displayCurrentPerformanceSong();
+                if (this.isChordsVisible && !localStorage.getItem('chordsHintShown')) {
+                    try {
+                        showToast('Chords shown. Tip: adjust font size for best alignment.', 'info', 3500);
+                        localStorage.setItem('chordsHintShown', '1');
+                    } catch {}
+                }
             });
             this.lyricsDisplay.addEventListener('scroll', () => this.updateScrollButtonsVisibility());
             this.lyricsDisplay.addEventListener('touchstart', () => this.stopAutoScroll());
@@ -304,7 +350,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.autoFitManuallyOverridden = false; // Reset override for new song
 
             // Process lyrics
-            let lines = song.lyrics.split('\n').map(line => line.trim());
+            let lines = (song.lyrics || '').split('\n').map(line => line.trimEnd());
+            const chordsLines = String(song.chords || '').split('\n');
             const normTitle = song.title.trim().toLowerCase();
             let removed = 0;
             while (lines.length && removed < 2) {
@@ -319,8 +366,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 <h2>${song.title}</h2>
                 <div class="song-progress">${songNumber} / ${totalSongs}</div>
             `;
-		    
-	    this.lyricsDisplay.textContent = lines.join('\n');
+
+            // Render lines with optional chords
+            this.lyricsDisplay.classList.toggle('show-chords', !!this.isChordsVisible);
+            this.lyricsDisplay.innerHTML = '';
+            const frag = document.createDocumentFragment();
+            let chordIdx = 0;
+            for (let i = 0; i < lines.length; i++) {
+                const lyricLine = lines[i];
+                if (/^\s*\[[^\n\]]+\]\s*$/.test(lyricLine)) {
+                    const el = document.createElement('div');
+                    el.className = 'section-label';
+                    el.textContent = lyricLine.trim();
+                    frag.appendChild(el);
+                    continue;
+                }
+                if (this.isChordsVisible) {
+                    const chordText = chordsLines[chordIdx] || '';
+                    if (chordText && chordText.trim()) {
+                        const chordEl = document.createElement('div');
+                        chordEl.className = 'chord-line';
+                        chordEl.textContent = chordText;
+                        frag.appendChild(chordEl);
+                    }
+                }
+                const lyricEl = document.createElement('div');
+                lyricEl.className = 'lyric-line';
+                lyricEl.textContent = lyricLine;
+                frag.appendChild(lyricEl);
+                chordIdx++;
+            }
+            this.lyricsDisplay.appendChild(frag);
 
 	// Restore per-song font size if present, else use last-used or default
 	    let fs = this.perSongFontSizes[song.id];

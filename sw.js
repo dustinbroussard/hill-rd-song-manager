@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hill-rd-setlist-manager-v5';
+const CACHE_NAME = 'hill-rd-setlist-manager-v6';
 const urlsToCache = [
     '/',
     '/index.html',
@@ -22,7 +22,7 @@ const urlsToCache = [
     // Prefer local Fuse build to avoid CDN + redirect issues
     'lib/fuse.js',
     // Editor assets
-    '/editor/editor.html',
+    // editor shell will be cached via custom fetch to avoid redirected entries
     '/editor/editor.js',
     '/editor/editor.css',
     '/editor/songs.js',
@@ -34,9 +34,28 @@ self.addEventListener('install', event => {
         try {
             const cache = await caches.open(CACHE_NAME);
             console.log('Opened cache');
-            await cache.addAll(urlsToCache);
+            // Fetch each URL with redirect: 'follow' and store a non-redirected copy
+            for (const url of urlsToCache) {
+                try {
+                    const res = await fetch(url, { redirect: 'follow' });
+                    const clean = await (async (response) => {
+                        try {
+                            if (!response || !response.redirected) return response;
+                            const body = await response.clone().blob();
+                            return new Response(body, {
+                                status: response.status,
+                                statusText: response.statusText,
+                                headers: response.headers
+                            });
+                        } catch (e) { return response; }
+                    })(res);
+                    if (clean && clean.ok) await cache.put(url, clean.clone());
+                } catch (e) {
+                    console.warn('Precaching failed for', url, e);
+                }
+            }
         } catch (err) {
-            console.warn('Cache addAll failed', err);
+            console.warn('Cache warmup failed', err);
         }
         self.skipWaiting();
     })());
@@ -85,22 +104,28 @@ self.addEventListener('fetch', event => {
 
       let res;
       if (isHTML) {
-        // SPA routing: for navigations to non-performance paths, serve /index.html
-        if (!urlObj.pathname.startsWith('/performance/')) {
-          const indexKey = new Request('/index.html');
-          const cachedIndex = await caches.match(indexKey);
-          if (cachedIndex) return cachedIndex;
-          res = await fetch('/index.html', { redirect: 'follow' });
+        // Route by section: editor, performance, or app index
+        if (urlObj.pathname.startsWith('/editor/')) {
+          const editorKey = new Request('/editor/editor.html');
+          const cachedEditor = await caches.match(editorKey);
+          if (cachedEditor) return cachedEditor;
+          res = await fetch('/editor/editor.html', { redirect: 'follow' });
           res = await stripRedirect(res);
-          if (res && res.status === 200) cache.put(indexKey, res.clone());
-        } else {
-          // For performance navigations, always serve the base document without query
+          if (res && res.status === 200) cache.put(editorKey, res.clone());
+        } else if (urlObj.pathname.startsWith('/performance/')) {
           const perfKey = new Request('/performance/performance.html');
           const cachedPerf = await caches.match(perfKey);
           if (cachedPerf) return cachedPerf;
           res = await fetch('/performance/performance.html', { redirect: 'follow' });
           res = await stripRedirect(res);
           if (res && res.status === 200) cache.put(perfKey, res.clone());
+        } else {
+          const indexKey = new Request('/index.html');
+          const cachedIndex = await caches.match(indexKey);
+          if (cachedIndex) return cachedIndex;
+          res = await fetch('/index.html', { redirect: 'follow' });
+          res = await stripRedirect(res);
+          if (res && res.status === 200) cache.put(indexKey, res.clone());
         }
       } else {
         if (isTrainedData) {

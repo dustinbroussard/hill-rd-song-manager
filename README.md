@@ -18,6 +18,12 @@ A **modern, touch-friendly web app** for musicians to manage setlists and lyrics
 - **Light/Dark themes**: AMOLED Dark (default) and Light. Toggle instantly—even during performance.
 - **PWA support**: Install on your phone/tablet/desktop and use offline.
 - **Export/Import**: Back up your setlists in `.json`, `.txt`, `.csv`, or print-friendly **PDF (auto-fit)**.
+ - **New (Audit Enhancements)**:
+   - Safer CSV export (handles missing lyrics), debounced search for smoother typing on large libraries, and global keyboard shortcuts:
+     - `/` focuses the active search bar (Songs/Lyrics tab).
+     - Ctrl/Cmd+E opens Export.
+     - Ctrl/Cmd+N starts a new song (Songs tab).
+   - Drag-to-reorder now degrades gracefully offline if SortableJS CDN is unavailable.
 
 ---
 
@@ -148,6 +154,10 @@ A **modern, touch-friendly web app** for musicians to manage setlists and lyrics
 
 This app is intentionally "no build, no framework, no backend."  
 If you want to add features, just fork and hack away. Open issues or suggestions welcome!
+
+Developer tooling added by the audit:
+- ESLint + Prettier config and GitHub Actions CI for lint/format checks.
+- Scripts: `npm run lint`, `npm run format`.
 
 ---
 

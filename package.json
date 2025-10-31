@@ -7,9 +7,17 @@
     "lib": "lib"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "eslint . --ext .js --ignore-pattern lib --ignore-pattern ./lib --ignore-pattern **/lib/**",
+    "format": "prettier -w \"**/*.{js,css,html,json,md}\"",
+    "test": "echo 'No tests yet'"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-import": "^2.29.1",
+    "prettier": "^3.3.3"
+  }
 }

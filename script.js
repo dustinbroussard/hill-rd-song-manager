@@ -1,3 +1,4 @@
+/* global idb, Fuse, Sortable, mammoth */
 // ==== THEME HANDLING ====
 document.addEventListener('DOMContentLoaded', function() {
     // Initialize theme with strict dark/light only
@@ -8,6 +9,15 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     document.documentElement.dataset.theme = savedTheme;
 });
+
+// Small utility
+function debounce(fn, delay = 200) {
+  let t;
+  return function debounced(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
 
 // ==== DB MODULE (IndexedDB via idb) ====
 /* global idb */
@@ -211,7 +221,7 @@ const SetlistsManager = (() => {
                 s.id !== id && s.name.toLowerCase() === normalized.toLowerCase()
             );
             if (existing) throw new Error(`A setlist named "${normalized}" already exists`);
-            setlist.name = newName.trim();
+            setlist.name = normalized;
             setlist.updatedAt = Date.now();
             DB.putSetlist(setlist);
             return setlist;
@@ -397,9 +407,11 @@ const SetlistsManager = (() => {
                 return songs.map(song => song.title).join('\n');
             case 'csv':
                 const header = 'Title,Lyrics\n';
-                const rows = songs.map(song => 
-                    `"${song.title.replace(/"/g, '""')}","${song.lyrics.replace(/"/g, '""')}"`
-                ).join('\n');
+                const rows = songs.map(song => {
+                    const t = String(song.title || '').replace(/"/g, '""');
+                    const l = String(song.lyrics || '').replace(/"/g, '""');
+                    return `"${t}","${l}"`;
+                }).join('\n');
                 return header + rows;
             default:
                 return null;
@@ -579,7 +591,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.deleteAllSongsBtn = document.getElementById('delete-all-songs-btn');
                 this.songUploadInput = document.getElementById('song-upload-input');
 
-                this.songSearchInput.addEventListener('input', () => this.renderSongs());
+                this.songSearchInput.addEventListener('input', debounce(() => this.renderSongs(), 120));
                 const songVoiceBtn = document.getElementById('song-voice-btn');
                 this.setupSpeechToText(this.songSearchInput, songVoiceBtn, () => this.renderSongs());
                 if (this.songSortSelect) {
@@ -631,7 +643,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.performanceSongSearch = document.getElementById('performance-song-search');
                 this.startPerformanceBtn = document.getElementById('start-performance-btn');
                 this.performanceSetlistSelect.addEventListener('change', () => this.handlePerformanceSetlistChange());
-                this.performanceSongSearch.addEventListener('input', () => this.handlePerformanceSongSearch());
+                this.performanceSongSearch.addEventListener('input', debounce(() => this.handlePerformanceSongSearch(), 120));
                 const perfVoiceBtn = document.getElementById('performance-voice-btn');
                 this.setupSpeechToText(this.performanceSongSearch, perfVoiceBtn, () => this.handlePerformanceSongSearch());
                 this.startPerformanceBtn.addEventListener('click', () => this.handleStartPerformance());
@@ -837,22 +849,35 @@ document.addEventListener('DOMContentLoaded', () => {
             await this.saveData();
         },
 
+        _ensureFuse() {
+            const count = Array.isArray(this.songs) ? this.songs.length : 0;
+            if (!this._fuse || this._fuseCount !== count) {
+                try {
+                    this._fuse = new Fuse(this.songs, {
+                        keys: [
+                            { name: 'title', weight: 0.75 },
+                            { name: 'lyrics', weight: 0.25 }
+                        ],
+                        includeScore: true,
+                        threshold: 0.35,
+                        ignoreLocation: true,
+                        minMatchCharLength: 2,
+                    });
+                    this._fuseCount = count;
+                } catch (e) {
+                    this._fuse = null; this._fuseCount = 0;
+                }
+            }
+        },
+
         searchLyrics(query) {
             const q = String(query || '').trim();
             if (!q) return this.songs.slice();
             // Use Fuse.js for fuzzy search across title and lyrics
             try {
-                const fuse = new Fuse(this.songs, {
-                    keys: [
-                        { name: 'title', weight: 0.75 },
-                        { name: 'lyrics', weight: 0.25 }
-                    ],
-                    includeScore: true,
-                    threshold: 0.35,
-                    ignoreLocation: true,
-                    minMatchCharLength: 2,
-                });
-                return fuse.search(q).map(r => r.item);
+                this._ensureFuse();
+                if (!this._fuse) throw new Error('Fuse unavailable');
+                return this._fuse.search(q).map(r => r.item);
             } catch (e) {
                 // Fallback to simple includes if Fuse isn't available
                 const low = q.toLowerCase();
@@ -929,6 +954,37 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.querySelectorAll('input[name="import-type"]').forEach(r=> r.addEventListener('change', ()=> this.updateImportOptionsVisibility()));
                 this.updateImportOptionsVisibility();
             }
+
+            // Global keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                const activeTab = document.querySelector('.nav-button.active')?.dataset.tab;
+                // Focus search with '/'
+                if (e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    const input = activeTab === 'songs' ? document.getElementById('song-search-input')
+                                 : activeTab === 'performance' ? document.getElementById('performance-song-search')
+                                 : null;
+                    if (input) {
+                        e.preventDefault();
+                        input.focus();
+                    }
+                }
+                // Ctrl/Cmd+E to open export modal
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'e') {
+                    const m = document.getElementById('export-modal');
+                    if (m) {
+                        e.preventDefault();
+                        m.style.display = 'flex';
+                        this.updateExportFormatOptions();
+                    }
+                }
+                // Ctrl/Cmd+N to add song (Songs tab only)
+                if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'n') {
+                    if (activeTab === 'songs') {
+                        e.preventDefault();
+                        this.openSongModal();
+                    }
+                }
+            });
         },
 
         showEditChoice(id) {
@@ -1997,6 +2053,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (this.sortableSetlist) {
                 this.sortableSetlist.destroy();
+            }
+            // Gracefully handle environments where SortableJS failed to load (e.g., offline without CDN)
+            if (typeof Sortable === 'undefined') {
+                try { showToast('Drag-to-reorder unavailable (SortableJS not loaded).', 'info', 3000); } catch {}
+                return;
             }
             this.sortableSetlist = Sortable.create(this.currentSetlistSongsContainer, {
                 animation: 150,
